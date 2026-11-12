@@ -76,6 +76,7 @@ final class ApprovalCenter: ObservableObject {
                                 styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],
                                 backing: .buffered, defer: false)
             panel.title = "Redact"
+            panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -106,59 +107,104 @@ struct ApprovalView: View {
     @State private var showCaller = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: "lock.shield")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.tint)
+        let production = request.environment == "production"
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.m) {
+                BrandTile(brand: .ofAgent(request.agent), size: 36, symbol: "terminal")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(request.agent) wants to use your secrets")
-                        .font(.headline)
-                    Text("\(request.project) · \(request.environment)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Text("\(request.agent) wants to run").font(TextStyle.heading).foregroundStyle(Palette.ink)
+                    HStack(spacing: Space.s) {
+                        Text(request.project).font(TextStyle.small).foregroundStyle(Palette.ink2)
+                        Pill(text: request.environment, symbol: production ? "bolt.fill" : nil, tone: production ? .warning : .neutral)
+                    }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Command").font(.caption).foregroundStyle(.secondary)
-                Text(request.command)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .lineLimit(3)
-                Text("Variables (\(request.variableNames.count))").font(.caption).foregroundStyle(.secondary)
-                Text(request.variableNames.isEmpty ? "none" : request.variableNames.joined(separator: ", "))
-                    .font(.system(.callout, design: .monospaced))
-                    .lineLimit(3)
+            (Text("$ ").foregroundStyle(Palette.ink3) + Text(request.command).foregroundStyle(Palette.ink))
+                .font(TextStyle.monoLarge)
+                .textSelection(.enabled)
+                .lineLimit(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Space.m)
+                .sunken(radius: Radius.card)
+
+            VStack(alignment: .leading, spacing: Space.s) {
+                Text(request.variableNames.isEmpty ? "No variables" : "Gets \(request.variableNames.count) variable\(request.variableNames.count == 1 ? "" : "s")")
+                    .font(TextStyle.smallStrong).foregroundStyle(Palette.ink2)
+                FlowChips(names: request.variableNames)
             }
 
-            DisclosureGroup("Caller details", isExpanded: $showCaller) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(request.callerPath).font(.caption.monospaced()).textSelection(.enabled)
-                    Text(request.callerChain).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    Text(request.callerSigned).font(.caption).foregroundStyle(.secondary)
-                    Text(request.directory).font(.caption.monospaced()).foregroundStyle(.secondary)
+            DisclosureGroup(isExpanded: $showCaller) {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    Text(request.callerPath).font(TextStyle.monoSmall).foregroundStyle(Palette.ink).textSelection(.enabled)
+                    Text(request.callerChain).font(TextStyle.monoSmall).foregroundStyle(Palette.ink2)
+                    Text(request.callerSigned).font(TextStyle.caption).foregroundStyle(Palette.ink2)
+                    Text(request.directory).font(TextStyle.monoSmall).foregroundStyle(Palette.ink2)
                 }
+                .padding(.top, Space.xs)
+            } label: {
+                Text("Caller details").font(TextStyle.small).foregroundStyle(Palette.ink2)
             }
-            .font(.caption)
 
             Text("Approving gives this command the values. Output is masked, but the command itself can use them however it likes.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(TextStyle.small)
+                .foregroundStyle(Palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
+            HStack(spacing: Space.s) {
                 Button("Deny", role: .cancel) { decide(.deny) }
+                    .buttonStyle(.secondary)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 if request.allowsGrant {
-                    Button("Allow for 15 min") { decide(.fifteenMinutes) }
+                    Button("Allow for 15 min") { decide(.fifteenMinutes) }.buttonStyle(.secondary)
                 }
-                Button("Allow once") { decide(.once) }
+                Button { decide(.once) } label: { Label("Allow once", systemImage: "touchid") }
+                    .buttonStyle(.primary)
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(Space.xl)
+        .frame(width: 480)
+        .background(Palette.canvas)
+    }
+}
+
+/// Variable names as chips that wrap onto new lines.
+struct FlowChips: View {
+    let names: [String]
+
+    var body: some View {
+        WrapLayout(spacing: Space.xs) {
+            ForEach(names, id: \.self) { Pill(text: $0, mono: true) }
+        }
+    }
+}
+
+struct WrapLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += size.width + spacing
+            maxX = max(maxX, x - spacing)
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxX, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

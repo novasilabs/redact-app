@@ -17,83 +17,106 @@ struct IdentitiesView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Identities").font(.title2.bold())
-                    Spacer()
-                    Button { reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+            VStack(alignment: .leading, spacing: Space.xl) {
+                PageHeader(title: "Accounts",
+                           subtitle: "Bind each account to the folders it owns. Inside a bound folder, plain `wrangler deploy`, `gh` or `vercel` use that account. No more logging out and back in.") {
+                    Button { reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.secondary)
+                    Button { showTokenSheet = true } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.primary)
                 }
-                Text("Bind each Cloudflare account to the folders it owns. Inside a bound folder, plain `wrangler deploy` uses that account. No more logout/login.")
-                    .foregroundStyle(.secondary)
 
                 warnings
 
-                GroupBox("Wrangler profiles") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(profiles, id: \.name) { profile in profileRow(profile) }
-                        Divider()
-                        HStack {
-                            TextField("new profile name (e.g. acme)", text: $newProfile)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                            Button("Log in and create") { createProfile() }
-                                .disabled(!isValidProfileName(newProfile) || busy != nil)
-                            Text("Opens Cloudflare in your browser.").font(.caption).foregroundStyle(.secondary)
-                        }
+                VStack(alignment: .leading, spacing: Space.s) {
+                    GroupLabel(title: "Cloudflare: Wrangler profiles") {
+                        Text("Logins live in Wrangler, Redact only binds folders").font(TextStyle.caption).foregroundStyle(Palette.ink2)
                     }
-                    .padding(8)
+                    VStack(spacing: 0) {
+                        ForEach(Array(profiles.enumerated()), id: \.element.name) { index, profile in
+                            if index > 0 { Rule(inset: 52) }
+                            profileRow(profile)
+                        }
+                        if !profiles.isEmpty { Rule() }
+                        HStack(spacing: Space.s) {
+                            Field(placeholder: "New profile name, e.g. acme", text: $newProfile, mono: true)
+                                .frame(width: 260)
+                                .onSubmit(createProfile)
+                            Button("Log in and create", action: createProfile)
+                                .buttonStyle(.secondary)
+                                .disabled(!isValidProfileName(newProfile) || busy != nil)
+                            Text("Opens Cloudflare in your browser").font(TextStyle.small).foregroundStyle(Palette.ink2)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(Space.m)
+                    }
+                    .card()
                 }
 
-                GroupBox("Other accounts") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("GitHub, Vercel and Supabase tokens and Cloudflare API tokens are stored in this vault and set for bound folders by `redact run` (and by the shell wrappers). AWS identities just pick a profile from ~/.aws/config.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        ForEach(Identity.Provider.allCases, id: \.self) { provider in
-                            let list = vault.data.identities.filter { $0.provider == provider }
-                            if !list.isEmpty {
-                                Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
-                                ForEach(list) { identity in tokenRow(identity) }
+                VStack(alignment: .leading, spacing: Space.s) {
+                    GroupLabel(title: "Tokens and profiles in this vault") {
+                        Text("Set for bound folders by `redact run` and the shell hook").font(TextStyle.caption).foregroundStyle(Palette.ink2)
+                    }
+                    let tokenIdentities = Identity.Provider.allCases.flatMap { provider in vault.data.identities.filter { $0.provider == provider } }
+                    VStack(spacing: 0) {
+                        ForEach(Array(tokenIdentities.enumerated()), id: \.element.id) { index, identity in
+                            if index > 0 { Rule(inset: 52) }
+                            tokenRow(identity)
+                        }
+                        if tokenIdentities.isEmpty {
+                            EmptyState(symbol: "person.2", title: "No accounts yet",
+                                       message: "Add a GitHub, Vercel, Supabase or Cloudflare token, or pick an AWS profile. Redact sets it only inside the folders you bind.") {
+                                Button { showTokenSheet = true } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.secondary)
                             }
                         }
-                        Button("Add account…") { showTokenSheet = true }
                     }
-                    .padding(8)
+                    .card()
                 }
 
-                if let busy { ProgressView(busy).controlSize(.small) }
+                if let busy {
+                    HStack(spacing: Space.s) {
+                        ProgressView().controlSize(.small)
+                        Text(busy).font(TextStyle.small).foregroundStyle(Palette.ink2)
+                    }
+                }
                 if let output {
-                    Text(output)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: Space.s) {
+                        GroupLabel(title: "Wrangler output") {
+                            Button("Clear") { self.output = nil }.buttonStyle(.quiet)
+                        }
+                        Text(output)
+                            .font(TextStyle.monoSmall)
+                            .foregroundStyle(Palette.ink)
+                            .textSelection(.enabled)
+                            .padding(Space.m)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .sunken(radius: Radius.card)
+                    }
                 }
             }
-            .padding(20)
+            .padding(Space.xl)
+            .frame(maxWidth: 920, alignment: .leading)
         }
         .onAppear(perform: reload)
         .sheet(isPresented: $showTokenSheet) { TokenIdentitySheet() }
-        .navigationTitle("Identities")
     }
 
     @ViewBuilder private var warnings: some View {
         if profiles.contains(where: { !$0.encrypted }) {
-            HStack {
-                Label("Some Wrangler logins are stored as plaintext files.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Spacer()
+            Notice(symbol: "exclamationmark.triangle.fill", text: "Some Wrangler logins are stored as plaintext files.") {
                 Button("Move to Keychain") { runWrangler("Moving logins to the Keychain…") { await WranglerCLI.moveTokensToKeychain() } }
+                    .buttonStyle(.secondary)
             }
         }
         if !broken.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Label("These bindings never apply (the path is a symlink, Wrangler looks up the real path):", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: Space.s) {
+                Notice(symbol: "exclamationmark.triangle.fill",
+                       text: "These bindings never apply: the path is a symlink and Wrangler looks up the real path.")
                 ForEach(broken, id: \.self) { path in
                     HStack {
-                        Text(path).font(.caption.monospaced())
-                        Button("Fix") { fixBinding(path) }.controlSize(.small)
+                        PathLabel(path: path)
+                        Spacer()
+                        Button("Fix") { fixBinding(path) }.buttonStyle(.secondary)
                     }
+                    .padding(.horizontal, Space.m)
                 }
             }
         }
@@ -101,18 +124,25 @@ struct IdentitiesView: View {
 
     private func profileRow(_ profile: WranglerProfiles.Profile) -> some View {
         let paths = bindings.filter { $0.value == profile.name }.map(\.key).sorted()
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "cloud").foregroundStyle(.orange)
-                Text(profile.name).font(.headline)
-                if profile.name == "default" { Text("fallback everywhere else").font(.caption).foregroundStyle(.secondary) }
-                Image(systemName: profile.encrypted ? "lock.fill" : "lock.open")
-                    .foregroundStyle(profile.encrypted ? Color.secondary : Color.orange)
-                    .help(profile.encrypted ? "Stored in the Keychain" : "Stored as a plaintext file")
-                if let who = whoami[profile.name] { Text(who).font(.caption).foregroundStyle(.secondary) }
+        return VStack(alignment: .leading, spacing: Space.s) {
+            HStack(spacing: Space.m) {
+                BrandTile(brand: .named("Cloudflare"), size: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: Space.s) {
+                        Text(profile.name).font(TextStyle.monoStrong).foregroundStyle(Palette.ink)
+                        if profile.encrypted {
+                            Pill(text: "Keychain", symbol: "lock.fill")
+                        } else {
+                            Pill(text: "Plaintext file", symbol: "lock.open.fill", tone: .warning)
+                        }
+                    }
+                    Text(profile.name == "default" ? "Used everywhere no other profile is bound"
+                         : (whoami[profile.name] ?? "\(paths.count) folder\(paths.count == 1 ? "" : "s")"))
+                        .font(TextStyle.small).foregroundStyle(Palette.ink2)
+                }
                 Spacer()
                 if profile.name != "default" {
-                    Button("Bind folder…") { bind(profile.name) }
+                    Button("Bind folder…") { bind(profile.name) }.buttonStyle(.secondary)
                     Menu {
                         if let first = paths.first { Button("Check account") { check(profile.name, in: first) } }
                         Button("Re-authenticate") { runWrangler("Re-authenticating \(profile.name)…") { await WranglerCLI.createProfile(profile.name) } }
@@ -120,24 +150,20 @@ struct IdentitiesView: View {
                         Button("Delete profile", role: .destructive) {
                             runWrangler("Deleting \(profile.name)…") { await WranglerCLI.run(["auth", "delete", profile.name]) }
                         }
-                    } label: { Image(systemName: "ellipsis.circle") }
+                    } label: { Image(systemName: "ellipsis").foregroundStyle(Palette.ink2).frame(width: 24, height: 24) }
                         .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .fixedSize()
+                        .help("More")
                 }
             }
             ForEach(paths, id: \.self) { path in
-                HStack {
-                    Image(systemName: "folder").foregroundStyle(.secondary)
-                    Text(abbreviate(path)).font(.callout.monospaced()).lineLimit(1).truncationMode(.head).help(path)
-                    Spacer()
-                    Button("Unbind") {
-                        runWrangler("Unbinding…") { await WranglerCLI.deactivate(directory: path) }
-                    }
-                    .controlSize(.small)
+                BoundFolderRow(path: path) {
+                    runWrangler("Unbinding…") { await WranglerCLI.deactivate(directory: path) }
                 }
-                .padding(.leading, 24)
             }
         }
+        .padding(Space.m)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard profile.name != "default", let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -151,42 +177,62 @@ struct IdentitiesView: View {
     }
 
     private func tokenRow(_ identity: Identity) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: Self.icon(identity.provider)).foregroundStyle(.tint)
-                Text(identity.name).font(.headline)
-                switch identity.mode {
-                case let .apiToken(_, accountID):
-                    if let accountID { Text(accountID).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                case let .awsProfile(name):
-                    Text("profile \(name)").font(.caption.monospaced()).foregroundStyle(.secondary)
-                case .wranglerProfile:
-                    EmptyView()
-                }
-                Spacer()
-                Button("Bind folder…") { bindToken(identity) }
-                Button(role: .destructive) {
-                    vault.update { data in
-                        if case let .apiToken(itemID, _) = identity.mode { data.items.removeAll { $0.id == itemID } }
-                        data.identities.removeAll { $0.id == identity.id }
-                    }
-                } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-            }
-            ForEach(identity.boundPaths, id: \.self) { path in
-                HStack {
-                    Image(systemName: "folder").foregroundStyle(.secondary)
-                    Text(abbreviate(path)).font(.callout.monospaced()).lineLimit(1).truncationMode(.head).help(path)
-                    Spacer()
-                    Button("Unbind") {
-                        vault.update { data in
-                            if let i = data.identities.firstIndex(where: { $0.id == identity.id }) { data.identities[i].boundPaths.removeAll { $0 == path } }
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(spacing: Space.m) {
+                BrandTile(brand: .of(identity.provider), size: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(identity.name).font(TextStyle.monoStrong).foregroundStyle(Palette.ink)
+                    Group {
+                        switch identity.mode {
+                        case let .apiToken(_, accountID):
+                            if let accountID {
+                                Text("\(identity.provider.displayName) token, \(identity.provider.scopeLabel?.lowercased() ?? "scope") ")
+                                    + Text(accountID).font(TextStyle.monoSmall)
+                            } else {
+                                Text("\(identity.provider.displayName) token")
+                            }
+                        case let .awsProfile(name):
+                            Text("AWS profile ") + Text(name).font(TextStyle.monoSmall)
+                        case .wranglerProfile:
+                            Text("Wrangler profile")
                         }
                     }
-                    .controlSize(.small)
+                    .font(TextStyle.small)
+                    .foregroundStyle(Palette.ink2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 }
-                .padding(.leading, 24)
+                Spacer()
+                Button("Bind folder…") { bindToken(identity) }.buttonStyle(.secondary)
+                IconButton(symbol: "trash", help: "Remove account", tint: Palette.danger) { removeIdentity(identity) }
             }
+            ForEach(identity.boundPaths, id: \.self) { path in
+                BoundFolderRow(path: path) {
+                    vault.update { data in
+                        if let i = data.identities.firstIndex(where: { $0.id == identity.id }) { data.identities[i].boundPaths.removeAll { $0 == path } }
+                    }
+                }
+            }
+            if identity.boundPaths.isEmpty {
+                Text("Not bound to any folder yet").font(TextStyle.small).foregroundStyle(Palette.ink2).padding(.leading, 40)
+            }
+        }
+        .padding(Space.m)
+    }
+
+    private func removeIdentity(_ identity: Identity) {
+        let alert = NSAlert()
+        alert.messageText = "Remove the \(identity.provider.displayName) account \(identity.name)?"
+        alert.informativeText = identity.tokenItemID == nil
+            ? "Its folder bindings are removed. Your AWS profile isn't touched."
+            : "Its token is deleted from the vault and its folder bindings are removed."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        vault.update { data in
+            if case let .apiToken(itemID, _) = identity.mode { data.items.removeAll { $0.id == itemID } }
+            data.identities.removeAll { $0.id == identity.id }
         }
     }
 
@@ -312,13 +358,16 @@ struct TokenIdentitySheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Add account").font(.title2.bold())
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.m) {
+                BrandTile(brand: .of(provider), size: 36)
+                Text("Add account").font(TextStyle.title).foregroundStyle(Palette.ink)
+            }
             Picker("Provider", selection: $provider) {
                 ForEach(Identity.Provider.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
             .pickerStyle(.segmented)
-            Text(hint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(hint).font(TextStyle.small).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
             TextField("Name (e.g. work, acme)", text: $name)
             if provider == .aws {
                 let profiles = Self.awsProfiles
@@ -336,20 +385,21 @@ struct TokenIdentitySheet: View {
                     TextField(provider == .cloudflare ? "\(label) (optional but recommended)" : "\(label) (optional)", text: $scope)
                 }
             }
-            if let status { Text(status).font(.callout) }
-            if let error { Text(error).font(.callout).foregroundStyle(.red) }
+            if let status { Text(status).font(TextStyle.small).foregroundStyle(Palette.ink) }
+            if let error { Notice(symbol: "exclamationmark.triangle.fill", text: error, tone: .danger) }
             HStack {
                 if provider == .cloudflare {
-                    Button("Verify token") { verifyCloudflare() }.disabled(token.isEmpty || verifying)
+                    Button("Verify token") { verifyCloudflare() }.buttonStyle(.secondary).disabled(token.isEmpty || verifying)
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(!canSave)
+                Button("Cancel") { dismiss() }.buttonStyle(.quiet).keyboardShortcut(.cancelAction)
+                Button("Save") { save() }.buttonStyle(.primary).keyboardShortcut(.defaultAction).disabled(!canSave)
             }
         }
         .textFieldStyle(.roundedBorder)
-        .padding(20)
+        .padding(Space.xl)
         .frame(width: 560)
+        .canvas()
     }
 
     var canSave: Bool {
@@ -395,5 +445,23 @@ struct TokenIdentitySheet: View {
             }
         }
         dismiss()
+    }
+}
+
+/// A folder an account is bound to, with an Unbind action.
+struct BoundFolderRow: View {
+    let path: String
+    let unbind: () -> Void
+
+    var body: some View {
+        HStack(spacing: Space.s) {
+            PathLabel(path: path, font: TextStyle.mono)
+            Spacer(minLength: Space.s)
+            Button("Unbind", action: unbind).buttonStyle(.quiet)
+        }
+        .padding(.leading, Space.s)
+        .frame(height: 28)
+        .sunken()
+        .padding(.leading, 40)
     }
 }

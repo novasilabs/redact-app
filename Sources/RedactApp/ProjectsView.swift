@@ -2,98 +2,6 @@ import RedactCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ProjectsView: View {
-    @EnvironmentObject var vault: VaultController
-    @State private var selection: UUID?
-    @State private var importRoot: String?
-    @State private var dropTargeted = false
-
-    var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                List(selection: $selection) {
-                    ForEach(vault.data.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { project in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(project.name).font(.body.weight(.medium))
-                            Text(abbreviate(project.path)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
-                        }
-                        .tag(project.id)
-                        .contextMenu {
-                            Button("Show in Finder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path) }
-                            Button("Re-scan env files…") { importRoot = project.path }
-                            Divider()
-                            Button("Remove project", role: .destructive) { remove(project) }
-                        }
-                    }
-                }
-                Divider()
-                HStack {
-                    Button { chooseFolder() } label: { Label("Add project folder…", systemImage: "folder.badge.plus") }
-                        .buttonStyle(.borderless)
-                    Spacer()
-                }
-                .padding(8)
-            }
-            .frame(minWidth: 180, idealWidth: 200, maxWidth: 300)
-
-            Group {
-                if let id = selection, let project = vault.data.projects.first(where: { $0.id == id }) {
-                    ProjectDetailView(project: project, rescan: { importRoot = project.path })
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "tray.and.arrow.down").font(.system(size: 40)).foregroundStyle(.secondary)
-                        Text("Drop a project folder here").font(.title3)
-                        Text("Redact finds its .env and .dev.vars files, shows what's new or changed per environment, and saves only what you check.")
-                            .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(dropTargeted ? Color.accentColor.opacity(0.08) : .clear)
-                }
-            }
-            .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url, url.hasDirectoryPath else { return }
-                Task { @MainActor in importRoot = url.path }
-            }
-            return true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .redactDevSelectFirst)) { _ in
-            selection = vault.data.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }.first?.id
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .redactDevImport)) { note in importRoot = note.object as? String }
-        .sheet(item: Binding(get: { importRoot.map(ImportTarget.init) }, set: { importRoot = $0?.path })) { target in
-            ImportSheet(root: target.path) { projectID in selection = projectID }
-        }
-        .navigationTitle("Projects")
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.prompt = "Add Project"
-        if panel.runModal() == .OK, let url = panel.url { importRoot = url.path }
-    }
-
-    private func remove(_ project: Project) {
-        let alert = NSAlert()
-        alert.messageText = "Remove \(project.name)?"
-        alert.informativeText = "Its \(vault.data.items.filter { $0.projectID == project.id }.count) variables will be deleted from the vault. Files on disk are not touched."
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons.first?.hasDestructiveAction = true
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        vault.update { data in
-            data.items.removeAll { $0.projectID == project.id }
-            data.projects.removeAll { $0.id == project.id }
-        }
-        selection = nil
-    }
-}
-
 struct ImportTarget: Identifiable {
     let path: String
     var id: String { path }
@@ -103,6 +11,118 @@ func abbreviate(_ path: String) -> String {
     (path as NSString).abbreviatingWithTildeInPath
 }
 
+// MARK: - All projects
+
+struct ProjectsOverview: View {
+    @EnvironmentObject var vault: VaultController
+    let open: (UUID) -> Void
+    let add: () -> Void
+    let importFolder: (String) -> Void
+    @State private var dropTargeted = false
+
+    private var projects: [Project] {
+        vault.data.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.xl) {
+                PageHeader(title: "Projects",
+                           subtitle: "Each project is a folder. `redact run` gives its commands the variables for one environment, and they never touch the disk.") {
+                    Button(action: add) { Label("Add folder", systemImage: "plus") }.buttonStyle(.primary)
+                }
+
+                if projects.isEmpty {
+                    dropZone(large: true)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
+                            if index > 0 { Rule(inset: 56) }
+                            ProjectRow(project: project) { open(project.id) }
+                        }
+                    }
+                    .card()
+                    dropZone(large: false)
+                }
+            }
+            .padding(Space.xl)
+            .frame(maxWidth: 920, alignment: .leading)
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.hasDirectoryPath else { return }
+                Task { @MainActor in importFolder(url.path) }
+            }
+            return true
+        }
+    }
+
+    private func dropZone(large: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+        return Group {
+            if large {
+                EmptyState(symbol: "tray.and.arrow.down", title: "Drop a project folder here",
+                           message: "Redact finds its .env and .dev.vars files, shows what's new per environment, and saves only what you check.") {
+                    Button("Choose folder…", action: add).buttonStyle(.secondary)
+                }
+                .padding(.vertical, Space.xxl)
+            } else {
+                Label("Drop another folder here to import its env files", systemImage: "tray.and.arrow.down")
+                    .labelStyle(TightLabelStyle())
+                    .font(TextStyle.small)
+                    .foregroundStyle(Palette.ink2)
+                    .frame(maxWidth: .infinity)
+                    .padding(Space.l)
+            }
+        }
+        .background(dropTargeted ? Palette.accentSoft : .clear, in: shape)
+        .overlay(shape.strokeBorder(dropTargeted ? Palette.accentText : Palette.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+    }
+}
+
+private struct ProjectRow: View {
+    @EnvironmentObject var vault: VaultController
+    let project: Project
+    let open: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: Space.m) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.ink2)
+                    .frame(width: 32, height: 32)
+                    .sunken(radius: Radius.tile)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name).font(TextStyle.bodyStrong).foregroundStyle(Palette.ink)
+                    PathLabel(path: project.path)
+                }
+                Spacer(minLength: Space.l)
+                HStack(spacing: Space.xs) {
+                    ForEach(project.environments, id: \.self) { env in
+                        let count = vault.data.variables(projectID: project.id, environment: env).count
+                        if count > 0 { Pill(text: "\(env) \(count)") }
+                    }
+                }
+                HStack(spacing: Space.xs) {
+                    ForEach(vault.data.boundIdentities(for: project.path).values.map(\.0).sorted { $0.name < $1.name }) { identity in
+                        BrandTile(brand: .of(identity.provider), size: 18).help("\(identity.provider.displayName) account \(identity.name)")
+                    }
+                }
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3)
+            }
+            .padding(.horizontal, Space.m)
+            .padding(.vertical, 10)
+            .background(hovering ? Palette.hover : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
 // MARK: - Project detail
 
 struct ProjectDetailView: View {
@@ -110,9 +130,11 @@ struct ProjectDetailView: View {
     let project: Project
     let rescan: () -> Void
     @State private var environment = "development"
+    @State private var adding = false
     @State private var newName = ""
     @State private var newValue = ""
-    @State private var linkTarget: Item?
+    @State private var copiedCommand = false
+    @FocusState private var nameFocused: Bool
 
     var variables: [Item] { vault.data.variables(projectID: project.id, environment: environment) }
 
@@ -123,89 +145,161 @@ struct ProjectDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(project.name).font(.title2.bold())
-                    Text(abbreviate(project.path)).font(.callout).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle).help(project.path)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.xl) {
+                header
+                EnvironmentTabs(environments: project.environments, selection: $environment) { env in
+                    vault.data.variables(projectID: project.id, environment: env).count
                 }
-                Spacer()
-                Button("Re-scan files…", action: rescan)
+                variablesCard
             }
-            .padding([.horizontal, .top], 16)
-
-            Picker("Environment", selection: $environment) {
-                ForEach(project.environments, id: \.self) { env in
-                    Text("\(env) (\(vault.data.variables(projectID: project.id, environment: env).count))").tag(env)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(16)
-
-            Table(variables) {
-                TableColumn("Name") { item in
-                    HStack(spacing: 4) {
-                        if item.linkedItemID != nil {
-                            Image(systemName: "link").foregroundStyle(.tint).help("Linked to a shared key")
-                        }
-                        Text(item.name).font(.system(.body, design: .monospaced))
-                    }
-                }
-                .width(min: 120, ideal: 170, max: 280)
-                TableColumn("Value") { item in MaskedValue(value: vault.data.resolvedValue(of: item)) }
-                    .width(min: 190, ideal: 200)
-                TableColumn("Updated") { item in
-                    Text(ActivityView.ago.localizedString(for: item.updatedAt, relativeTo: Date()))
-                        .foregroundStyle(.secondary).font(.caption)
-                }
-                .width(70)
-            }
-            .overlay {
-                if variables.isEmpty {
-                    VStack(spacing: 6) {
-                        Text("No variables in \(environment)").font(.headline)
-                        Text("Add one below, or re-scan the project's env files.").foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .contextMenu(forSelectionType: Item.ID.self) { ids in
-                if let id = ids.first, let item = variables.first(where: { $0.id == id }) {
-                    Button("Copy value") { Clipboard.copy(vault.data.resolvedValue(of: item)) }
-                    Button("Copy `redact run` command") { Clipboard.copy("redact run --env \(environment) -- ") }
-                    if item.linkedItemID == nil {
-                        Button("Move to Keys and link…") { promote(item) }
-                    } else {
-                        Button("Unlink (keep a copy)") { unlink(item) }
-                    }
-                    Divider()
-                    Button("Delete", role: .destructive) { vault.update { $0.items.removeAll { $0.id == id } } }
-                }
-            }
-
-            HStack {
-                TextField("NAME", text: $newName).font(.system(.body, design: .monospaced)).frame(width: 200)
-                SecureField("value", text: $newValue)
-                Button("Add") { add() }
-                    .disabled(!EnvFile.isValidName(newName) || newValue.isEmpty)
-                    .keyboardShortcut(.return, modifiers: [.command])
-            }
-            .textFieldStyle(.roundedBorder)
-            .padding(16)
-
-            Text("Run with: redact run --env \(environment) -- <command>")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .padding([.horizontal, .bottom], 16)
+            .padding(Space.xl)
+            .frame(maxWidth: 1040, alignment: .leading)
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { runStrip }
         .onAppear { environment = initialEnvironment }
-        .onChange(of: project.id) { environment = initialEnvironment }
+        .onChange(of: environment) { adding = false }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                Text(project.name).font(TextStyle.title).foregroundStyle(Palette.ink)
+                PathLabel(path: project.path, font: TextStyle.mono)
+                accounts
+            }
+            Spacer(minLength: Space.l)
+            Button(action: rescan) { Label("Re-scan files", systemImage: "arrow.clockwise") }.buttonStyle(.secondary)
+            Button { startAdding() } label: { Label("Add variable", systemImage: "plus") }
+                .buttonStyle(.primary)
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .help("Add a variable to \(environment) (⇧⌘N)")
+        }
+    }
+
+    /// Which accounts a command run here gets (the per-folder switcher, made visible).
+    @ViewBuilder private var accounts: some View {
+        let bound = vault.data.boundIdentities(for: project.path).values.map(\.0).sorted { $0.provider.rawValue < $1.provider.rawValue }
+        let wrangler = DevSnapshot.directory == nil
+            ? WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot()).resolve(directory: project.path, environment: [:]).profile
+            : "default"
+        if !bound.isEmpty || wrangler != "default" {
+            HStack(spacing: Space.s) {
+                Text("Runs as").font(TextStyle.small).foregroundStyle(Palette.ink2)
+                if wrangler != "default" {
+                    AccountChip(brand: .named("Cloudflare"), name: wrangler, help: "Wrangler profile bound to this folder")
+                }
+                ForEach(bound) { identity in
+                    AccountChip(brand: .of(identity.provider), name: identity.name,
+                                help: "\(identity.provider.displayName) account \(identity.name), set for commands run here")
+                }
+            }
+        }
+    }
+
+    // MARK: Variables
+
+    private var variablesCard: some View {
+        VStack(spacing: 0) {
+            if adding {
+                newVariableRow
+                if !variables.isEmpty { Rule() }
+            }
+            ForEach(Array(variables.enumerated()), id: \.element.id) { index, item in
+                if index > 0 { Rule(inset: Space.m) }
+                VariableRow(item: item, value: vault.data.resolvedValue(of: item), linkedName: linkedName(item)) {
+                    menu(for: item)
+                }
+            }
+            if variables.isEmpty && !adding {
+                EmptyState(symbol: "list.bullet.rectangle", title: "No variables in \(environment)",
+                           message: "Add one by hand, or re-scan the folder's env files.") {
+                    Button { startAdding() } label: { Label("Add variable", systemImage: "plus") }.buttonStyle(.secondary)
+                }
+            }
+        }
+        .card()
+    }
+
+    private var newVariableRow: some View {
+        HStack(spacing: Space.s) {
+            Field(placeholder: "NAME", text: $newName, mono: true)
+                .frame(width: 220)
+                .focused($nameFocused)
+                .onChange(of: newName) {
+                    let upper = newName.uppercased()
+                    if upper != newName { newName = upper }
+                }
+            Field(placeholder: "value", text: $newValue, secure: true, mono: true)
+                .onSubmit(add)
+            Button("Cancel") { adding = false; newName = ""; newValue = "" }
+                .buttonStyle(.quiet)
+                .keyboardShortcut(.cancelAction)
+            Button("Save", action: add)
+                .buttonStyle(.primary)
+                .disabled(!EnvFile.isValidName(newName) || newValue.isEmpty)
+                .keyboardShortcut(.return, modifiers: [.command])
+        }
+        .padding(Space.m)
+        .background(Palette.accentSoft.opacity(0.5))
+    }
+
+    private func linkedName(_ item: Item) -> String? {
+        guard let id = item.linkedItemID else { return nil }
+        return vault.data.items.first { $0.id == id }?.name
+    }
+
+    @ViewBuilder private func menu(for item: Item) -> some View {
+        Button("Copy value") { Clipboard.copy(vault.data.resolvedValue(of: item)) }
+        Button("Copy name") { Clipboard.copy(item.name) }
+        if item.linkedItemID == nil {
+            Button("Move to Keys and link…") { promote(item) }
+        } else {
+            Button("Unlink (keep a copy)") { unlink(item) }
+        }
+        Divider()
+        Button("Delete…", role: .destructive) { delete(item) }
+    }
+
+    // MARK: Run strip
+
+    private var runStrip: some View {
+        let command = "redact run --env \(environment) -- "
+        return HStack(spacing: Space.s) {
+            Image(systemName: "terminal").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.ink3)
+            (Text(command).foregroundStyle(Palette.ink) + Text("<command>").foregroundStyle(Palette.ink3))
+                .font(TextStyle.mono)
+                .textSelection(.enabled)
+                .lineLimit(1)
+            Spacer()
+            Text("Output is masked").font(TextStyle.caption).foregroundStyle(Palette.ink2)
+            Button {
+                Clipboard.copy(command)
+                copiedCommand = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCommand = false }
+            } label: {
+                Label(copiedCommand ? "Copied" : "Copy", systemImage: copiedCommand ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.quiet)
+        }
+        .padding(.horizontal, Space.xl)
+        .padding(.vertical, Space.s)
+        .background(.bar)
+        .overlay(alignment: .top) { Rule() }
+    }
+
+    // MARK: Actions
+
+    private func startAdding() {
+        adding = true
+        DispatchQueue.main.async { nameFocused = true }
     }
 
     private func add() {
         let name = newName.trimmingCharacters(in: .whitespaces)
+        guard EnvFile.isValidName(name), !newValue.isEmpty else { return }
         let value = newValue
         let env = environment
         vault.update { data in
@@ -219,6 +313,20 @@ struct ProjectDetailView: View {
         }
         newName = ""
         newValue = ""
+        nameFocused = true
+    }
+
+    private func delete(_ item: Item) {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(item.name) from \(environment)?"
+        alert.informativeText = item.linkedItemID == nil
+            ? "The value is removed from the vault."
+            : "Only this project's link is removed. The shared key stays in Keys."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        vault.update { $0.items.removeAll { $0.id == item.id } }
     }
 
     /// Turns a project variable into a shared key that other projects can link to.
@@ -246,6 +354,72 @@ struct ProjectDetailView: View {
                 data.items[index].linkedItemID = nil
             }
         }
+    }
+}
+
+struct AccountChip: View {
+    let brand: Brand
+    let name: String
+    let help: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            BrandTile(brand: brand, size: 16)
+            Text(name).font(TextStyle.smallStrong).foregroundStyle(Palette.ink)
+        }
+        .padding(.leading, 3)
+        .padding(.trailing, Space.s)
+        .frame(height: 22)
+        .background(Palette.hover, in: RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+        .help(help)
+    }
+}
+
+private struct VariableRow<MenuItems: View>: View {
+    let item: Item
+    let value: String
+    let linkedName: String?
+    @ViewBuilder let menu: () -> MenuItems
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: Space.m) {
+            Text(item.name)
+                .font(TextStyle.monoStrong)
+                .foregroundStyle(Palette.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(width: 220, alignment: .leading)
+                .help(item.name)
+            SecretValue(value: value)
+                .layoutPriority(1)
+            if let linkedName {
+                Pill(text: linkedName, symbol: "link", tone: .accent)
+                    .help("Linked to the shared key \"\(linkedName)\". Rotate it once in Keys and every project gets the new value.")
+                    .fixedSize()
+            }
+            Text(Ago.text(item.updatedAt))
+                .font(TextStyle.caption)
+                .foregroundStyle(Palette.ink2)
+                .monospacedDigit()
+                .frame(width: 76, alignment: .trailing)
+                .help("Updated \(item.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+            Menu { menu() } label: {
+                Image(systemName: "ellipsis").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.ink2)
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+        }
+        .padding(.horizontal, Space.m)
+        .frame(minHeight: 44)
+        .background(hovering ? Palette.hover : .clear)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu { menu() }
     }
 }
 
@@ -280,26 +454,34 @@ struct ImportSheet: View {
     }
 
     private func doneView(_ saved: (count: Int, before: VaultData, projectID: UUID)) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Space.l) {
             Label("Saved \(saved.count) variable\(saved.count == 1 ? "" : "s")", systemImage: "checkmark.circle.fill")
-                .font(.title2.bold())
-                .foregroundStyle(.green)
-            Text("Your project can now run with `redact run -- <command>`. The plaintext files below are no longer needed.")
-                .foregroundStyle(.secondary)
+                .font(TextStyle.title)
+                .foregroundStyle(Palette.ok)
+            Text("Your project now runs with `redact run -- <command>`. The plaintext files below aren't needed any more.")
+                .font(TextStyle.body)
+                .foregroundStyle(Palette.ink2)
             if !plaintextFiles.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(plaintextFiles, id: \.path) { file in
                         Label(file.relativePath, systemImage: trashed ? "trash" : "doc.plaintext")
-                            .font(.callout.monospaced())
-                            .foregroundStyle(trashed ? .secondary : .primary)
+                            .labelStyle(TightLabelStyle())
+                            .font(TextStyle.mono)
+                            .foregroundStyle(trashed ? Palette.ink2 : Palette.ink)
+                            .strikethrough(trashed)
                     }
                 }
+                .padding(Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .sunken(radius: Radius.card)
                 Button(trashed ? "Moved to Trash" : "Move \(plaintextFiles.count) plaintext file\(plaintextFiles.count == 1 ? "" : "s") to Trash") { trashFiles() }
+                    .buttonStyle(.secondary)
                     .disabled(trashed)
-                Text("They stay recoverable in the Trash until you empty it.").font(.caption).foregroundStyle(.secondary)
+                Text("They stay recoverable in the Trash until you empty it.").font(TextStyle.caption).foregroundStyle(Palette.ink2)
             }
             if gitignoreNeedsEnv || gitignoreAdded {
                 Button(gitignoreAdded ? "Added to .gitignore" : "Add .env files to .gitignore") { addGitignore() }
+                    .buttonStyle(.secondary)
                     .disabled(gitignoreAdded)
             }
             HStack {
@@ -312,11 +494,15 @@ struct ImportSheet: View {
                     }
                     dismiss()
                 }
+                .buttonStyle(.quiet)
                 Spacer()
-                Button("Done") { onDone(saved.projectID); dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { onDone(saved.projectID); dismiss() }
+                    .buttonStyle(.primary)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(Space.xl)
+        .canvas()
         .frame(width: 560)
     }
 
@@ -337,15 +523,19 @@ struct ImportSheet: View {
     }
 
     private var reviewView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(project == nil ? "Add \((root as NSString).lastPathComponent)" : "Re-scan \(project!.name)").font(.title2.bold())
-            Text(abbreviate(root)).foregroundStyle(.secondary).font(.callout).lineLimit(1).truncationMode(.middle)
+        VStack(alignment: .leading, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(project == nil ? "Add \((root as NSString).lastPathComponent)" : "Re-scan \(project!.name)")
+                    .font(TextStyle.title).foregroundStyle(Palette.ink)
+                PathLabel(path: root, font: TextStyle.mono)
+            }
 
-            if let error { Text(error).foregroundStyle(.red) }
+            if let error { Notice(symbol: "exclamationmark.triangle.fill", text: error, tone: .danger) }
             if let plan {
                 if plan.rows.isEmpty {
                     Text("No .env or .dev.vars files found. The project will be created empty; add variables by hand or with `redact set`.")
-                        .foregroundStyle(.secondary)
+                        .font(TextStyle.body)
+                        .foregroundStyle(Palette.ink2)
                 } else {
                     summary(plan)
                     Table(plan.rows) {
@@ -354,24 +544,34 @@ struct ImportSheet: View {
                         }
                         .width(24)
                         TableColumn("Variable") { row in
-                            Text(row.name).font(.system(.body, design: .monospaced))
+                            Text(row.name).font(TextStyle.monoStrong)
                                 .strikethrough(row.shadowed)
-                                .foregroundStyle(row.shadowed ? .secondary : .primary)
+                                .foregroundStyle(row.shadowed ? Palette.ink2 : Palette.ink)
                         }
-                        TableColumn("Env") { row in Text(row.environment) }.width(90)
+                        TableColumn("Env") { row in Text(row.environment).font(TextStyle.small) }.width(90)
                         TableColumn("Status") { row in statusBadge(row) }.width(150)
-                        TableColumn("File") { row in Text(row.sourceFile).foregroundStyle(.secondary).font(.caption) }
+                        TableColumn("File") { row in Text(row.sourceFile).foregroundStyle(Palette.ink2).font(TextStyle.monoSmall) }
                     }
                     .frame(minHeight: 260)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Palette.rule, lineWidth: 1))
                     if !plan.missingFromExample.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("Listed in .env.example but missing", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: Space.xs) {
+                            Label("Listed in .env.example but missing", systemImage: "exclamationmark.triangle.fill")
+                                .labelStyle(TightLabelStyle())
+                                .font(TextStyle.smallStrong)
+                                .foregroundStyle(Palette.warning)
                             ForEach(plan.missingFromExample.sorted { $0.key < $1.key }, id: \.key) { env, names in
-                                Text("\(env): \(names.joined(separator: ", "))").font(.caption.monospaced())
+                                Text("\(env): \(names.joined(separator: ", "))").font(TextStyle.monoSmall).foregroundStyle(Palette.ink2)
                             }
                         }
+                        .padding(Space.m)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Palette.soft(Palette.warning), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
                     }
                     Toggle("Link values that match an existing key (rotate once, update everywhere)", isOn: $linkDuplicates)
+                        .toggleStyle(.checkbox)
+                        .font(TextStyle.body)
                 }
             } else if error == nil {
                 ProgressView().frame(maxWidth: .infinity)
@@ -379,38 +579,40 @@ struct ImportSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.buttonStyle(.quiet).keyboardShortcut(.cancelAction)
                 Button(project == nil ? "Add project" : "Save selected") { save() }
+                    .buttonStyle(.primary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(plan == nil)
             }
         }
-        .padding(20)
+        .padding(Space.xl)
+        .canvas()
         .frame(width: 760)
         .task { load() }
     }
 
     private func summary(_ plan: ImportPlan) -> some View {
         let counts = Dictionary(grouping: plan.rows.filter { !$0.shadowed }, by: \.status).mapValues(\.count)
-        return HStack(spacing: 14) {
-            Text("\(plan.files.filter { !$0.isExample }.count) files")
-            Text("\(counts[.new] ?? 0) new").foregroundStyle(.green)
-            Text("\(counts[.changed] ?? 0) changed").foregroundStyle(.orange)
-            Text("\(counts[.unchanged] ?? 0) unchanged").foregroundStyle(.secondary)
+        let files = plan.files.filter { !$0.isExample }.count
+        return HStack(spacing: Space.s) {
+            Pill(text: "\(files) file\(files == 1 ? "" : "s")", symbol: "doc")
+            Pill(text: "\(counts[.new] ?? 0) new", symbol: "plus", tone: .ok)
+            Pill(text: "\(counts[.changed] ?? 0) changed", symbol: "arrow.triangle.2.circlepath", tone: .warning)
+            Pill(text: "\(counts[.unchanged] ?? 0) unchanged", symbol: "equal")
         }
-        .font(.callout)
     }
 
     @ViewBuilder private func statusBadge(_ row: ImportPlan.Row) -> some View {
         if row.shadowed {
-            Text("overridden").foregroundStyle(.secondary)
+            Pill(text: "overridden", symbol: "arrow.turn.down.right")
         } else if let name = row.duplicateName, linkDuplicates {
-            Label("links to \(name)", systemImage: "link").foregroundStyle(.tint).lineLimit(1)
+            Pill(text: name, symbol: "link", tone: .accent).help("Links to the existing key \(name)")
         } else {
             switch row.status {
-            case .new: Text("new").foregroundStyle(.green)
-            case .changed: Text("changed").foregroundStyle(.orange)
-            case .unchanged: Text("unchanged").foregroundStyle(.secondary)
+            case .new: Pill(text: "new", symbol: "plus", tone: .ok)
+            case .changed: Pill(text: "changed", symbol: "arrow.triangle.2.circlepath", tone: .warning)
+            case .unchanged: Pill(text: "unchanged", symbol: "equal")
             }
         }
     }

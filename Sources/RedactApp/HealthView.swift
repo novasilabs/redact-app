@@ -21,80 +21,97 @@ struct HealthView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            optionsPanel
-            Divider()
-            results
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.xl) {
+                PageHeader(title: "Leak check",
+                           subtitle: "Looks for your vault's values and well-known key formats where they shouldn't be. Nothing leaves this Mac.") {
+                    Button(action: scan) {
+                        Label(scanning ? "Scanning…" : "Scan now", systemImage: "magnifyingglass")
+                    }
+                    .buttonStyle(.primary)
+                    .keyboardShortcut("r")
+                    .disabled(scanning)
+                }
+                optionsCard
+                results
+            }
+            .padding(Space.xl)
+            .frame(maxWidth: 920, alignment: .leading)
         }
-        .navigationTitle("Health")
         .onReceive(NotificationCenter.default.publisher(for: .redactDevSelectFirst)) { _ in
             if findings == nil { scan() }
         }
     }
 
-    private var optionsPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Health").font(.title2.bold())
-            Text("Looks for your vault's values and well-known key formats where they shouldn't be. Nothing leaves this Mac.")
-                .foregroundStyle(.secondary)
-            HStack(spacing: 18) {
-                Toggle("Project folders (\(vault.data.projects.count))", isOn: $includeProjects)
-                Toggle("…and their git history", isOn: $includeGitHistory).disabled(!includeProjects)
-                Toggle(".env files", isOn: $includeEnvFiles).disabled(!includeProjects)
-                    .help("Env files are expected to contain secrets until you import and delete them.")
+    private var optionsCard: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            GroupLabel("Where to look")
+            HStack(alignment: .top, spacing: Space.xxl) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Toggle("Project folders (\(vault.data.projects.count))", isOn: $includeProjects)
+                    Toggle("Their git history", isOn: $includeGitHistory).disabled(!includeProjects).padding(.leading, Space.l)
+                    Toggle(".env files too", isOn: $includeEnvFiles).disabled(!includeProjects).padding(.leading, Space.l)
+                        .help("Env files are expected to contain secrets until you import and delete them.")
+                }
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Toggle("Shell history", isOn: $includeShell)
+                    Toggle("AI transcripts (Claude Code, Codex)", isOn: $includeAI)
+                }
+                Spacer(minLength: 0)
             }
-            HStack(spacing: 18) {
-                Toggle("Shell history", isOn: $includeShell)
-                Toggle("AI transcripts (Claude Code, Codex)", isOn: $includeAI)
-                Spacer()
-                if scanning { ProgressView().controlSize(.small) }
-                Button(scanning ? "Scanning…" : "Scan now") { scan() }
-                    .keyboardShortcut("r")
-                    .disabled(scanning)
-            }
+            .toggleStyle(.checkbox)
+            .font(TextStyle.body)
+            .padding(Space.l)
+            .card()
         }
-        .padding(20)
     }
 
     @ViewBuilder private var results: some View {
-        if let findings {
+        if scanning && findings == nil {
+            HStack(spacing: Space.s) {
+                ProgressView().controlSize(.small)
+                Text("Scanning…").font(TextStyle.body).foregroundStyle(Palette.ink2)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(Space.xxl)
+        } else if let findings {
             if findings.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.shield").font(.system(size: 40)).foregroundStyle(.green)
-                    Text("No leaks found").font(.title3)
-                    if let scannedAt {
-                        Text("Scanned \(scannedAt.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyState(symbol: "checkmark.shield", title: "No leaks found",
+                           message: scannedAt.map { "Scanned at \($0.formatted(date: .omitted, time: .shortened))." } ?? "")
+                    .card()
             } else {
                 findingsList(findings)
             }
         } else {
-            Text("Run a scan to see where secrets have leaked.")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyState(symbol: "magnifyingglass", title: "Not scanned yet",
+                       message: "Run a scan to see whether a key ended up in a file, a commit, your shell history or an AI transcript.")
+                .card()
         }
     }
 
     private func findingsList(_ findings: [SecretScanner.Finding]) -> some View {
         let groups = grouped
-        return List {
-            ForEach(groups, id: \.source) { group in
-                SwiftUI.Section {
-                    ForEach(group.findings, id: \.self) { finding in FindingRow(finding: finding) }
-                } header: {
-                    GroupHeader(source: group.source)
-                }
+        let values = findings.filter { $0.kind == .vaultValue }.count
+        return VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.s) {
+                Text("\(findings.count) finding\(findings.count == 1 ? "" : "s") in \(groups.count) place\(groups.count == 1 ? "" : "s")")
+                    .font(TextStyle.heading).foregroundStyle(Palette.ink)
+                if values > 0 { Pill(text: "\(values) from your vault", symbol: "key.fill", tone: .danger) }
+                Spacer()
+                if let scannedAt { Text("Scanned \(Ago.text(scannedAt))").font(TextStyle.small).foregroundStyle(Palette.ink2) }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            Text("\(findings.count) finding\(findings.count == 1 ? "" : "s") in \(groups.count) place\(groups.count == 1 ? "" : "s"). A leaked key should be rotated: replace it at the provider, then use Keys → Replace value.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.bar)
+            Text("A leaked key should be rotated: replace it at the provider, then use Keys, Replace value.")
+                .font(TextStyle.small).foregroundStyle(Palette.ink2)
+            ForEach(groups, id: \.source) { group in
+                VStack(spacing: 0) {
+                    GroupHeader(source: group.source)
+                    ForEach(group.findings, id: \.self) { finding in
+                        Rule()
+                        FindingRow(finding: finding)
+                    }
+                }
+                .card()
+            }
         }
     }
 
@@ -122,14 +139,21 @@ private struct FindingRow: View {
 
     var body: some View {
         let isValue = finding.kind == .vaultValue
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: isValue ? "key.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(isValue ? Color.red : Color.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(finding.name) · line \(finding.line)").font(.callout.weight(.medium))
-                Text(finding.preview).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+        HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+            Pill(text: isValue ? "Vault value" : "Key format", symbol: isValue ? "key.fill" : "exclamationmark.triangle.fill",
+                 tone: isValue ? .danger : .warning)
+                .frame(width: 104, alignment: .leading)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.s) {
+                    Text(finding.name).font(TextStyle.monoStrong).foregroundStyle(Palette.ink)
+                    Text("line \(finding.line)").font(TextStyle.small).monospacedDigit().foregroundStyle(Palette.ink2)
+                }
+                Text(finding.preview).font(TextStyle.monoSmall).foregroundStyle(Palette.ink2).lineLimit(2).textSelection(.enabled)
             }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Space.m)
+        .padding(.vertical, 10)
     }
 }
 
@@ -138,13 +162,22 @@ private struct GroupHeader: View {
 
     var body: some View {
         HStack {
-            Text(abbreviate(source)).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle)
+            Label {
+                Text(abbreviate(source)).font(TextStyle.mono).lineLimit(1).truncationMode(.middle)
+            } icon: {
+                Image(systemName: "doc.text").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            }
+            .labelStyle(TightLabelStyle())
+            .foregroundStyle(Palette.ink)
+            .help(source)
             Spacer()
             if FileManager.default.fileExists(atPath: source) {
                 Button("Show in Finder") { NSWorkspace.shared.selectFile(source, inFileViewerRootedAtPath: "") }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                    .buttonStyle(.quiet)
             }
         }
+        .padding(.leading, Space.m)
+        .padding(.trailing, Space.xs)
+        .frame(height: 40)
     }
 }

@@ -147,23 +147,29 @@ public struct BrokerResponse: Codable, Sendable {
 public enum BrokerError: LocalizedError {
     case appNotRunning
     case transport(String)
+    case socketPathTooLong(path: String, limit: Int)
 
     public var errorDescription: String? {
         switch self {
         case .appNotRunning: "Redact isn't running. Open Redact.app and try again."
         case .transport(let detail): "Could not talk to Redact: \(detail)"
+        case let .socketPathTooLong(path, limit):
+            "The agent socket path is \(path.utf8.count) bytes, longer than the \(limit) a Unix socket allows: \(path). Set REDACT_HOME to a shorter folder."
         }
     }
 }
 
 enum SocketIO {
-    static func address(_ path: String) -> sockaddr_un {
+    /// Longest path `sun_path` can hold (it needs a trailing NUL).
+    static let maxPathLength = MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1
+
+    /// Throws instead of truncating: a cut-off path would bind or connect somewhere else entirely.
+    static func address(_ path: String) throws -> sockaddr_un {
+        let bytes = Array(path.utf8)
+        guard bytes.count <= maxPathLength else { throw BrokerError.socketPathTooLong(path: path, limit: maxPathLength) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &address.sun_path) { raw in
-            let bytes = Array(path.utf8.prefix(raw.count - 1))
-            raw.copyBytes(from: bytes + [0])
-        }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in raw.copyBytes(from: bytes + [0]) }
         return address
     }
 
@@ -205,10 +211,10 @@ enum SocketIO {
 public enum BrokerClient {
     /// Sends one request and waits for the response. Blocks (approvals can take a while).
     public static func send(_ request: BrokerRequest, socketPath: String = RedactPaths.socket.path) throws -> BrokerResponse {
+        var address = try SocketIO.address(socketPath)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw BrokerError.transport("socket() failed") }
         defer { close(fd) }
-        var address = SocketIO.address(socketPath)
         guard SocketIO.withSockaddr(&address, { connect(fd, $0, $1) }) == 0 else { throw BrokerError.appNotRunning }
         var payload = try JSONEncoder().encode(request)
         payload.append(0x0A)
@@ -233,12 +239,12 @@ public final class BrokerServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        var address = try SocketIO.address(path)
         try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
                                                 withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw BrokerError.transport("socket() failed") }
-        var address = SocketIO.address(path)
         // Restrictive umask so the socket is never briefly world-accessible.
         let oldMask = umask(0o077)
         let bound = SocketIO.withSockaddr(&address) { bind(fd, $0, $1) }

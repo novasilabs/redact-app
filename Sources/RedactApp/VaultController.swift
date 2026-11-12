@@ -207,6 +207,13 @@ extension Notification.Name {
 enum Clipboard {
     private static var lastChangeCount: Int?
     static var clearAfter: TimeInterval = 60
+    private static var clearsAt: Date?
+
+    /// When the secret Redact put on the clipboard will be cleared (nil once it's gone or replaced).
+    static var pendingClear: Date? {
+        guard let clearsAt, clearsAt > Date(), let lastChangeCount, NSPasteboard.general.changeCount == lastChangeCount else { return nil }
+        return clearsAt
+    }
 
     static func copy(_ value: String) {
         let pasteboard = NSPasteboard.general
@@ -216,6 +223,7 @@ enum Clipboard {
         pasteboard.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
         let changeCount = pasteboard.changeCount
         lastChangeCount = changeCount
+        clearsAt = Date().addingTimeInterval(clearAfter)
         DispatchQueue.main.asyncAfter(deadline: .now() + clearAfter) {
             if NSPasteboard.general.changeCount == changeCount { NSPasteboard.general.clearContents() }
         }

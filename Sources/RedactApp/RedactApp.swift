@@ -11,8 +11,10 @@ struct RedactApp: App {
             RootView()
                 .environmentObject(delegate.vault)
                 .environmentObject(delegate.approvals)
-                .frame(minWidth: 820, minHeight: 520)
+                .environmentObject(delegate.status)
+                .frame(minWidth: 860, minHeight: 540)
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("Lock Redact") { delegate.vault.lock() }
@@ -35,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let vault = VaultController()
     let approvals = ApprovalCenter()
     let llmProxy = LLMProxy()
+    lazy var status = AppStatus(llmProxy: llmProxy)
     private var server: BrokerServer?
     private var hotKey: HotKey?
     private lazy var quickFind = QuickFindController(vault: vault)
@@ -52,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try server.start()
             self.server = server
+            status.socketReady = true
         } catch {
             vault.lastError = "Couldn't start the agent socket: \(error.localizedDescription)"
         }
@@ -70,4 +74,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+}
+
+/// Live app state for the status bar.
+@MainActor
+final class AppStatus: ObservableObject {
+    @Published var socketReady = false
+    let llmProxy: LLMProxy
+
+    init(llmProxy: LLMProxy) { self.llmProxy = llmProxy }
 }

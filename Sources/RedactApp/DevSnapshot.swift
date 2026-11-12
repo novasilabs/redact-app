@@ -17,6 +17,11 @@ enum DevSnapshot {
     static func run(vault: VaultController, approvals: ApprovalCenter) {
         guard let directory else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        switch ProcessInfo.processInfo.environment["REDACT_SNAPSHOT_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.5))
             capture("01-locked", to: directory)
