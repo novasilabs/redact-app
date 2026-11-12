@@ -72,7 +72,34 @@ public enum WranglerCLI {
         await run(["whoami", "--json"], directory: directory)
     }
 
-    public static func moveTokensToKeychain() async -> Result {
-        await run(["auth", "keyring", "enable"])
+    /// Turns on Wrangler's keyring storage and migrates existing plaintext logins.
+    ///
+    /// `keyring enable` only affects new logins; Wrangler encrypts an old `<profile>.toml` (and deletes it)
+    /// the next time it reads that profile. So each plaintext profile is read once with `auth token`, from
+    /// a scratch folder where that profile is active. The token output is discarded, never shown.
+    public static func moveTokensToKeychain(profiles: [String]) async -> Result {
+        let enable = await run(["auth", "keyring", "enable"])
+        guard enable.status == 0 else { return enable }
+        var lines: [String] = []
+        var failed = false
+        for profile in profiles {
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("redact-wrangler-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let dir = WranglerProfiles.realPath(scratch.path)
+            if profile != "default" {
+                let bound = await run(["auth", "activate", profile, dir])
+                guard bound.status == 0 else { failed = true; lines.append("\(profile): couldn't select it (\(bound.output))"); continue }
+            }
+            let read = await run(["auth", "token"], directory: dir)
+            if profile != "default" { _ = await run(["auth", "deactivate", dir]) }
+            if read.status == 0 {
+                lines.append("\(profile): moved to the Keychain.")
+            } else {
+                failed = true
+                lines.append("\(profile): not moved. Log in again for this profile; new logins go to the Keychain.")
+            }
+        }
+        return Result(status: failed ? 1 : 0, output: lines.isEmpty ? "Keychain storage is on." : lines.joined(separator: "\n"))
     }
 }

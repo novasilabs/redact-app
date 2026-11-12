@@ -26,11 +26,36 @@ struct IdentitiesView: View {
 
                 warnings
 
+                if let busy {
+                    HStack(spacing: Space.s) {
+                        ProgressView().controlSize(.small)
+                        Text(busy).font(TextStyle.small).foregroundStyle(Palette.ink2)
+                    }
+                }
+                if let output {
+                    VStack(alignment: .leading, spacing: Space.s) {
+                        GroupLabel(title: "Wrangler output") {
+                            Button("Clear") { self.output = nil }.buttonStyle(.quiet)
+                        }
+                        Text(output)
+                            .font(TextStyle.monoSmall)
+                            .foregroundStyle(Palette.ink)
+                            .textSelection(.enabled)
+                            .padding(Space.m)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .sunken(radius: Radius.card)
+                    }
+                }
+
                 VStack(alignment: .leading, spacing: Space.s) {
                     GroupLabel(title: "Cloudflare: Wrangler profiles") {
                         Text("Logins live in Wrangler, Redact only binds folders").font(TextStyle.caption).foregroundStyle(Palette.ink2)
                     }
                     VStack(spacing: 0) {
+                        if profiles.count > 1 {
+                            fallbackRow
+                            Rule()
+                        }
                         ForEach(Array(profiles.enumerated()), id: \.element.name) { index, profile in
                             if index > 0 { Rule(inset: 52) }
                             profileRow(profile)
@@ -71,26 +96,6 @@ struct IdentitiesView: View {
                     .card()
                 }
 
-                if let busy {
-                    HStack(spacing: Space.s) {
-                        ProgressView().controlSize(.small)
-                        Text(busy).font(TextStyle.small).foregroundStyle(Palette.ink2)
-                    }
-                }
-                if let output {
-                    VStack(alignment: .leading, spacing: Space.s) {
-                        GroupLabel(title: "Wrangler output") {
-                            Button("Clear") { self.output = nil }.buttonStyle(.quiet)
-                        }
-                        Text(output)
-                            .font(TextStyle.monoSmall)
-                            .foregroundStyle(Palette.ink)
-                            .textSelection(.enabled)
-                            .padding(Space.m)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .sunken(radius: Radius.card)
-                    }
-                }
             }
             .padding(Space.xl)
             .frame(maxWidth: 920, alignment: .leading)
@@ -102,7 +107,11 @@ struct IdentitiesView: View {
     @ViewBuilder private var warnings: some View {
         if profiles.contains(where: { !$0.encrypted }) {
             Notice(symbol: "exclamationmark.triangle.fill", text: "Some Wrangler logins are stored as plaintext files.") {
-                Button("Move to Keychain") { runWrangler("Moving logins to the Keychain…") { await WranglerCLI.moveTokensToKeychain() } }
+                Button("Move to Keychain") {
+                    let plaintext = profiles.filter { !$0.encrypted }.map(\.name)
+                    runWrangler("Moving logins to the Keychain…") { await WranglerCLI.moveTokensToKeychain(profiles: plaintext) }
+                }
+                .disabled(busy != nil)
                     .buttonStyle(.secondary)
             }
         }
@@ -122,8 +131,47 @@ struct IdentitiesView: View {
         }
     }
 
+    /// The home folder as Wrangler stores it. A binding here is the fallback for every unbound folder
+    /// under it, because Wrangler picks the longest bound prefix.
+    private var homePath: String { WranglerProfiles.realPath(NSHomeDirectory()) }
+
+    /// The profile unbound folders deploy with: whatever is bound to the home folder, else `default`.
+    private var fallbackProfile: String { bindings[homePath] ?? "default" }
+
+    private var fallbackRow: some View {
+        HStack(spacing: Space.m) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.ink2).frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Default account").font(TextStyle.body.weight(.semibold)).foregroundStyle(Palette.ink)
+                Text("Used in folders you haven't bound")
+                    .font(TextStyle.small).foregroundStyle(Palette.ink2)
+            }
+            Spacer()
+            Picker("Default account", selection: Binding(get: { fallbackProfile }, set: setFallback)) {
+                ForEach(profiles, id: \.name) { profile in
+                    Text(profile.name == "default" ? "default login" : profile.name).tag(profile.name)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .disabled(busy != nil)
+        }
+        .padding(Space.m)
+    }
+
+    private func setFallback(_ profile: String) {
+        guard profile != fallbackProfile else { return }
+        let home = homePath
+        if profile == "default" {
+            runWrangler("Unbound folders now use the default login…") { await WranglerCLI.deactivate(directory: home) }
+        } else {
+            runWrangler("Unbound folders now use \(profile)…") { await WranglerCLI.activate(profile: profile, directory: home) }
+        }
+    }
+
     private func profileRow(_ profile: WranglerProfiles.Profile) -> some View {
-        let paths = bindings.filter { $0.value == profile.name }.map(\.key).sorted()
+        let paths = bindings.filter { $0.value == profile.name && $0.key != homePath }.map(\.key).sorted()
         return VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.m) {
                 BrandTile(brand: .named("Cloudflare"), size: 28)
@@ -136,7 +184,8 @@ struct IdentitiesView: View {
                             Pill(text: "Plaintext file", symbol: "lock.open.fill", tone: .warning)
                         }
                     }
-                    Text(profile.name == "default" ? "Used everywhere no other profile is bound"
+                    Text(profile.name == "default"
+                         ? (fallbackProfile == "default" ? "Used in folders you haven't bound" : "Used only outside your home folder")
                          : (whoami[profile.name] ?? "\(paths.count) folder\(paths.count == 1 ? "" : "s")"))
                         .font(TextStyle.small).foregroundStyle(Palette.ink2)
                 }
@@ -349,7 +398,7 @@ struct TokenIdentitySheet: View {
 
     var hint: String {
         switch provider {
-        case .cloudflare: "dash.cloudflare.com → My Profile → API Tokens. Scope it to one account and the permissions you deploy with."
+        case .cloudflare: "In Cloudflare: My Profile → API Tokens → Create Token → use the **Edit Cloudflare Workers** template. Under Account Resources, include only this account. Add D1, Queues or Hyperdrive permissions if the project uses them."
         case .github: "github.com → Settings → Developer settings → Fine-grained tokens. Or in a terminal: redact id add github NAME --from-gh USER"
         case .vercel: "vercel.com → Account Settings → Tokens. Scope it to the team you deploy to."
         case .supabase: "supabase.com/dashboard/account/tokens"
@@ -367,8 +416,19 @@ struct TokenIdentitySheet: View {
                 ForEach(Identity.Provider.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
             .pickerStyle(.segmented)
-            Text(hint).font(TextStyle.small).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
-            TextField("Name (e.g. work, acme)", text: $name)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(LocalizedStringKey(hint)).font(TextStyle.small).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                if let link = provider.tokenPage {
+                    Link("Open the token page", destination: link).font(TextStyle.small).foregroundStyle(Palette.accentText)
+                }
+            }
+            VStack(alignment: .leading, spacing: Space.xs) {
+                TextField("Name (e.g. work, acme)", text: $name)
+                if !name.isEmpty, slug != name {
+                    Text(slug.isEmpty ? "Use letters or numbers in the name." : "Saved as \(slug). Names are used in the terminal, so they can't have spaces.")
+                        .font(TextStyle.caption).foregroundStyle(Palette.ink3)
+                }
+            }
             if provider == .aws {
                 let profiles = Self.awsProfiles
                 if profiles.isEmpty {
@@ -402,16 +462,27 @@ struct TokenIdentitySheet: View {
         .canvas()
     }
 
+    /// The name as stored: lowercased when it needed fixing, spaces and other characters turned into "-".
+    var slug: String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let ok: (Character) -> Bool = { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+        if !trimmed.isEmpty, trimmed == name, trimmed.allSatisfy(ok) { return trimmed }
+        var out = ""
+        for ch in trimmed.lowercased() {
+            if ok(ch) { out.append(ch) } else if out.last != "-" { out.append("-") }
+        }
+        return out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
     var canSave: Bool {
-        let validName = !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-        return validName && (provider == .aws ? !awsProfile.isEmpty : !token.isEmpty)
+        !slug.isEmpty && (provider == .aws ? !awsProfile.isEmpty : !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     /// Calls Cloudflare's token verify endpoint with the user's own token (sent only to api.cloudflare.com).
     private func verifyCloudflare() {
         verifying = true
         var request = URLRequest(url: URL(string: "https://api.cloudflare.com/client/v4/user/tokens/verify")!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         Task {
             defer { verifying = false }
             do {
@@ -420,13 +491,28 @@ struct TokenIdentitySheet: View {
                 let ok = object?["success"] as? Bool ?? false
                 let state = (object?["result"] as? [String: Any])?["status"] as? String ?? "unknown"
                 status = ok ? "✓ Token is \(state)." : "✗ Cloudflare rejected this token."
+                if ok, scope.isEmpty, let account = try await soleAccount() {
+                    scope = account.id
+                    status = "✓ Token is \(state). Account ID filled in for \(account.name)."
+                }
             } catch {
                 status = "Couldn't reach Cloudflare: \(error.localizedDescription)"
             }
         }
     }
 
+    /// The token's account, when it can reach exactly one (sent only to api.cloudflare.com).
+    private func soleAccount() async throws -> (id: String, name: String)? {
+        var request = URLRequest(url: URL(string: "https://api.cloudflare.com/client/v4/accounts?per_page=2")!)
+        request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let accounts = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["result"] as? [[String: Any]] ?? []
+        guard accounts.count == 1, let id = accounts[0]["id"] as? String else { return nil }
+        return (id, accounts[0]["name"] as? String ?? id)
+    }
+
     private func save() {
+        let name = slug
         if vault.data.identities.contains(where: { $0.name == name }) {
             error = "An account called \(name) already exists. Names must be unique."
             return
@@ -463,5 +549,18 @@ struct BoundFolderRow: View {
         .frame(height: 28)
         .sunken()
         .padding(.leading, 40)
+    }
+}
+
+extension Identity.Provider {
+    /// Where the user creates a token for this provider.
+    var tokenPage: URL? {
+        switch self {
+        case .cloudflare: URL(string: "https://dash.cloudflare.com/profile/api-tokens")
+        case .github: URL(string: "https://github.com/settings/personal-access-tokens")
+        case .vercel: URL(string: "https://vercel.com/account/settings/tokens")
+        case .supabase: URL(string: "https://supabase.com/dashboard/account/tokens")
+        case .aws: nil
+        }
     }
 }
