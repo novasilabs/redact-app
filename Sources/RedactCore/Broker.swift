@@ -22,8 +22,10 @@ public struct BrokerRequest: Codable, Sendable {
         case status, unlock, lock
         case list, resolve, set, remove
         case importFolder, initProject
-        case identities, bindIdentity
+        case identities, bindIdentity, addIdentity
         case activity
+        case scan
+        case endProxy
     }
 
     public var op: Op
@@ -35,9 +37,22 @@ public struct BrokerRequest: Codable, Sendable {
     public var path: String?
     /// Set by `redact mcp` so approvals name the agent even when the process tree is ambiguous.
     public var viaMCP: Bool?
+    public var scan: ScanOptions?
+    /// `resolve`: succeed with no values when the folder has no project or identity (shell wrappers).
+    public var ifAny: Bool?
+    /// `resolve`: only the folder's identity credentials, not the project's variables (tool wrappers).
+    public var identityOnly: Bool?
+    /// `addIdentity`: provider raw value and optional scope (Cloudflare account ID, AWS profile name).
+    public var provider: String?
+    public var scope: String?
+    /// `resolve`: route OpenAI/Anthropic keys through the local proxy (always on for agents).
+    public var llmProxy: Bool?
+    /// `endProxy`: placeholders to invalidate when the command has exited.
+    public var proxySessions: [String]?
 
     public init(op: Op, cwd: String = FileManager.default.currentDirectoryPath, environment: String? = nil,
-                name: String? = nil, value: String? = nil, command: [String]? = nil, path: String? = nil, viaMCP: Bool? = nil) {
+                name: String? = nil, value: String? = nil, command: [String]? = nil, path: String? = nil, viaMCP: Bool? = nil,
+                scan: ScanOptions? = nil, ifAny: Bool? = nil) {
         self.op = op
         self.cwd = cwd
         self.environment = environment
@@ -46,6 +61,8 @@ public struct BrokerRequest: Codable, Sendable {
         self.command = command
         self.path = path
         self.viaMCP = viaMCP
+        self.scan = scan
+        self.ifAny = ifAny
     }
 }
 
@@ -69,8 +86,10 @@ public struct IdentityInfo: Codable, Sendable, Equatable {
     public var mode: String           // "wrangler-profile" | "api-token"
     public var boundPaths: [String]
     public var encrypted: Bool?       // wrangler profiles: stored in keychain?
+    public var scope: String?
 
-    public init(name: String, provider: String, mode: String, boundPaths: [String], encrypted: Bool?) {
+    public init(name: String, provider: String, mode: String, boundPaths: [String], encrypted: Bool?, scope: String? = nil) {
+        self.scope = scope
         self.name = name
         self.provider = provider
         self.mode = mode
@@ -99,6 +118,18 @@ public struct BrokerResponse: Codable, Sendable {
     public var warnings: [String]?
     public var message: String?
     public var activity: [ActivityEntry]?
+    public var findings: [SecretScanner.Finding]?
+    /// `resolve`: names in `values` that are cloud credentials from an identity, not project variables.
+    public var identityNames: [String]?
+    /// `resolve`: provider of each identity name (e.g. GH_TOKEN → github).
+    public var identityProviders: [String: String]?
+    /// `status`: identities that apply in this folder, e.g. ["github: work", "aws: acme-prod"].
+    public var activeIdentities: [String]?
+    /// `status`: AWS profile bound to this folder (not a secret), for the shell hook.
+    public var awsProfile: String?
+    /// `resolve`: key variables replaced by proxy placeholders, and the placeholders to end afterwards.
+    public var proxiedNames: [String]?
+    public var proxySessions: [String]?
     /// `account_id` pinned by the folder's wrangler.toml / wrangler.jsonc, if any.
     public var pinnedAccount: String?
     public var pinnedAccountFile: String?

@@ -6,8 +6,9 @@ enum CommandRunner {
     /// Runs `command` with `extraEnvironment` added. When `mask` is set, stdout and stderr are piped
     /// through a streaming redactor; otherwise the child inherits the terminal directly.
     /// Returns the child's exit status (128 + signal if it was killed).
-    static func run(_ command: [String], extraEnvironment: [String: String], mask: Bool,
+    static func run(_ command: [String], extraEnvironment: [String: String], mask: Bool, notSecret: Set<String> = [],
                     stdout: FileHandle = .standardOutput, stderr: FileHandle = .standardError) -> Int32 {
+        let secrets = extraEnvironment.filter { !notSecret.contains($0.key) }
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in extraEnvironment { environment[key] = value }
 
@@ -22,8 +23,8 @@ enum CommandRunner {
             let errPipe = Pipe()
             process.standardOutput = outPipe
             process.standardError = errPipe
-            pump(outPipe, to: stdout, secrets: extraEnvironment, group: group)
-            pump(errPipe, to: stderr, secrets: extraEnvironment, group: group)
+            pump(outPipe, to: stdout, secrets: secrets, group: group)
+            pump(errPipe, to: stderr, secrets: secrets, group: group)
         }
 
         // Forward Ctrl-C / termination to the child instead of dying first.
@@ -65,7 +66,7 @@ enum CommandRunner {
 
     /// Runs a shell command and captures masked output (for MCP). Output is capped at `limit` bytes.
     static func capture(shell command: String, directory: String, extraEnvironment: [String: String],
-                        timeout: TimeInterval, limit: Int = 60_000) -> (status: Int32, output: String, timedOut: Bool) {
+                        timeout: TimeInterval, limit: Int = 60_000, notSecret: Set<String> = []) -> (status: Int32, output: String, timedOut: Bool) {
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in extraEnvironment { environment[key] = value }
         let process = Process()
@@ -81,7 +82,7 @@ enum CommandRunner {
         let lock = NSLock()
         var collected = Data()
         var truncated = false
-        let redactor = Redactor(secrets: extraEnvironment)
+        let redactor = Redactor(secrets: extraEnvironment.filter { !notSecret.contains($0.key) })
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let reader = pipe.fileHandleForReading

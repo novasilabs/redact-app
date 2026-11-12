@@ -85,3 +85,24 @@ private func tempURL(_ name: String) -> URL {
     #expect(SecretDetector.guess("1111-2222\n3333-4444\n5555-6666\n7777-8888")?.kind == .backupCodes)
     #expect(SecretDetector.guess("hello world") == nil)
 }
+
+@Test func identitiesInjectPerProviderNearestBindingWins() {
+    var data = VaultData()
+    let ghWork = Item(kind: .apiKey, name: "gh work", value: "ghp_work")
+    let ghClient = Item(kind: .apiKey, name: "gh client", value: "ghp_client")
+    let cf = Item(kind: .apiKey, name: "cf", value: "cf-token")
+    data.items = [ghWork, ghClient, cf]
+    data.identities = [
+        Identity(provider: .github, name: "work", mode: .apiToken(itemID: ghWork.id, accountID: nil), boundPaths: ["/code"]),
+        Identity(provider: .github, name: "client", mode: .apiToken(itemID: ghClient.id, accountID: nil), boundPaths: ["/code/client"]),
+        Identity(provider: .cloudflare, name: "acme", mode: .apiToken(itemID: cf.id, accountID: "acct1"), boundPaths: ["/code"]),
+        Identity(provider: .aws, name: "acme-prod", mode: .awsProfile(name: "acme-prod"), boundPaths: ["/code/client"]),
+    ]
+    let inner = data.identityEnvironment(for: "/code/client/api")
+    #expect(inner.values == ["GH_TOKEN": "ghp_client", "CLOUDFLARE_API_TOKEN": "cf-token", "CLOUDFLARE_ACCOUNT_ID": "acct1", "AWS_PROFILE": "acme-prod"])
+    #expect(inner.providers["GH_TOKEN"] == .github)
+    #expect(inner.providers["AWS_PROFILE"] == .aws)
+    let outer = data.identityEnvironment(for: "/code/other")
+    #expect(outer.values == ["GH_TOKEN": "ghp_work", "CLOUDFLARE_API_TOKEN": "cf-token", "CLOUDFLARE_ACCOUNT_ID": "acct1"])
+    #expect(data.identityEnvironment(for: "/elsewhere").values.isEmpty)
+}

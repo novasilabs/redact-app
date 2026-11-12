@@ -2,7 +2,7 @@ import RedactCore
 import SwiftUI
 
 enum Section: String, CaseIterable, Identifiable {
-    case projects = "Projects", keys = "Keys", codes = "Codes", identities = "Identities", activity = "Activity"
+    case projects = "Projects", keys = "Keys", codes = "Codes", identities = "Identities", health = "Health", activity = "Activity"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -10,6 +10,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .keys: "key"
         case .codes: "list.number"
         case .identities: "person.2.badge.key"
+        case .health: "stethoscope"
         case .activity: "clock.arrow.circlepath"
         }
     }
@@ -19,7 +20,8 @@ enum Section: String, CaseIterable, Identifiable {
         case .keys: "2"
         case .codes: "3"
         case .identities: "4"
-        case .activity: "5"
+        case .health: "5"
+        case .activity: "6"
         }
     }
 }
@@ -162,6 +164,7 @@ struct MainView: View {
             case .keys: KeysView(kind: .apiKey)
             case .codes: KeysView(kind: .backupCodes)
             case .identities: IdentitiesView()
+            case .health: HealthView()
             case .activity: ActivityView()
             }
         }

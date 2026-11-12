@@ -48,6 +48,51 @@ claude mcp add redact -- /path/to/Redact.app/Contents/Resources/bin/redact mcp
 
 Tools: `redact_status`, `redact_list_variables` (names only), `redact_run` (approved, masked), `redact_request_secret`. No tool returns a value, and agents cannot change the vault through MCP. Changes through the CLI (`set`, `rm`, `import`) by an agent need your approval.
 
+### OpenAI and Anthropic keys stay in Redact
+
+When an agent runs a command (or you pass `--llm-proxy`), `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not injected. Instead the command gets:
+
+```
+OPENAI_API_KEY=redact-proxy-…            ANTHROPIC_API_KEY=redact-proxy-…
+OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/v1   ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/anthropic
+```
+
+The official SDKs (and most libraries) read these variables, so calls work unchanged: Redact's local proxy swaps in the real key and forwards to `api.openai.com` / `api.anthropic.com`, streaming included. The command can use the API but can't read or leak the key. Placeholders stop working when the command exits, when the vault locks, or after 12 hours. The proxy listens on 127.0.0.1 only and forwards to those two hosts only. If a project sets its own `OPENAI_BASE_URL` (e.g. Azure), that provider is left alone. Code that hard-codes `https://api.openai.com` will get a 401 with the placeholder; point it at the base URL variable instead.
+
+### Push to hosts
+
+```sh
+redact push --to cloudflare --env production --dry-run   # names only, no approval needed
+redact push --to cloudflare --env production             # wrangler secret bulk
+redact push --to github --target production              # gh secret set (GitHub Actions environment)
+redact push --to supabase                                # supabase secrets set
+redact push --to vercel --env preview                    # vercel env add (untested on a real account)
+redact push --to aws --target myapp/prod                 # Secrets Manager, one JSON secret (untested)
+```
+
+Values go to each host's own CLI over stdin, never as arguments. Agents need your approval, like `redact run`. A folder's Cloudflare API-token identity is used to authenticate Wrangler, never pushed as a secret, and never given to other hosts' CLIs.
+
+### Leak scan and pre-commit hook
+
+```sh
+redact scan                    # this folder: vault values + well-known key formats (AWS, GitHub, Stripe, …)
+redact scan --history          # …plus every added line in git history
+redact scan --all              # …plus shell history and Claude Code / Codex transcripts
+redact hook install            # pre-commit: block commits that contain secrets
+```
+
+The app's **Health** screen runs the same scan across all your projects. Vault values are matched inside the app; only names, file and line come back. The pre-commit hook never prompts for Touch ID or starts the app: if Redact is locked or not running, it checks well-known key formats only and says so.
+
+### Shell integration
+
+```sh
+eval "$(redact hook zsh)"      # in ~/.zshrc  (or: redact hook bash)
+```
+
+Shows `redact: demo-app · development · cf: acme · gh: work · aws: acme-prod` when you `cd` into a project, sets `$REDACT_PROMPT` for your prompt, exports `AWS_PROFILE` for folders bound to an AWS account (never overriding one you set yourself), and adds `rr` = `redact run --`.
+
+Add `--wrap gh,vercel,supabase,wrangler` to run those tools with the account bound to the current folder. Wrappers inject only that account's credentials (not your project variables), pass straight through when nothing is bound or Redact isn't running, and never start the app.
+
 ### Cloudflare accounts
 
 Redact → Identities manages [Wrangler auth profiles](https://developers.cloudflare.com/workers/wrangler/profiles/): log in once per account, then bind folders. Inside a bound folder, plain `wrangler deploy` uses that account. From the terminal:
@@ -59,6 +104,28 @@ redact id which               # in any folder: which account applies here
 ```
 
 Redact resolves symlinks before binding (Wrangler otherwise stores a path that never matches) and warns when logins are stored in plaintext. For least-privilege or older Wrangler versions, add an **API token identity** instead; `redact run` injects it as `CLOUDFLARE_API_TOKEN` for bound folders.
+
+### GitHub, Vercel, Supabase and AWS accounts
+
+```sh
+redact id add github work --from-gh my-work-login     # token from `gh auth token --user …`
+printf '%s' "$TOKEN" | redact id add vercel client-x   # token from stdin (or typed, hidden)
+redact id add supabase personal                        # prompts for the token
+redact id add aws acme-prod --profile acme-prod        # just a profile name from ~/.aws/config
+redact id bind work ~/code                             # nearest bound folder wins, per provider
+redact id bind client-x ~/clients/x
+redact id which                                        # what applies here
+```
+
+| Provider | Set for bound folders |
+|---|---|
+| GitHub | `GH_TOKEN` |
+| Vercel | `VERCEL_TOKEN` |
+| Supabase | `SUPABASE_ACCESS_TOKEN` |
+| Cloudflare (token) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| AWS | `AWS_PROFILE` (no secret stored) |
+
+Credentials go to `redact run` and the shell wrappers. `redact push --to github` authenticates `gh` with the folder's GitHub account and never uploads that token as a secret; each host's CLI only ever sees its own provider's credentials. Agents need your approval to add or rebind accounts.
 
 ## Layout
 

@@ -10,8 +10,20 @@ final class VaultController: ObservableObject {
     enum State: Equatable { case noVault, locked, unlocked }
 
     @Published private(set) var state: State = .locked
-    @Published var data = VaultData()
+    @Published var data = VaultData() {
+        didSet {
+            if state == .unlocked {
+                projectIndex = data.projects
+                identityIndex = data.identities
+            }
+        }
+    }
     @Published var lastError: String?
+    /// Project names and paths only (no secrets). Kept after locking so the shell prompt and `status`
+    /// can still say which project a folder belongs to. Forgotten when the app quits.
+    private(set) var projectIndex: [Project] = []
+    /// Identity names, providers and bound folders (token values stay in the vault). Same lifetime.
+    private(set) var identityIndex: [Identity] = []
 
     private var file: VaultFile?
     private var key: SymmetricKey?
@@ -102,6 +114,8 @@ final class VaultController: ObservableObject {
         touch()
         lastError = nil
         state = .unlocked
+        projectIndex = data.projects
+        identityIndex = data.identities
     }
 
     private func reenrollEnclave() throws {
@@ -114,13 +128,13 @@ final class VaultController: ObservableObject {
 
     func lock() {
         guard state == .unlocked else { return }
+        state = .locked // first, so clearing `data` below keeps the project index
         key = nil
         context?.invalidate()
         context = nil
         file = nil
         data = VaultData()
         unlockedAt = nil
-        state = .locked
         Clipboard.clearIfOurs()
         NotificationCenter.default.post(name: .redactDidLock, object: nil)
     }

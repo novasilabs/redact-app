@@ -34,13 +34,18 @@ struct RedactApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let vault = VaultController()
     let approvals = ApprovalCenter()
+    let llmProxy = LLMProxy()
     private var server: BrokerServer?
     private var hotKey: HotKey?
     private lazy var quickFind = QuickFindController(vault: vault)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        let handler = BrokerHandler(vault: vault, approvals: approvals)
+        let handler = BrokerHandler(vault: vault, approvals: approvals, llmProxy: llmProxy)
+        // Placeholders stop working the moment the vault locks.
+        NotificationCenter.default.addObserver(forName: .redactDidLock, object: nil, queue: .main) { [llmProxy] _ in
+            llmProxy.endAll()
+        }
         let server = BrokerServer { request, peer in
             await handler.handle(request, peer: peer)
         }
@@ -60,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         server?.stop()
+        llmProxy.stop()
         vault.lock()
     }
 

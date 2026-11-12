@@ -114,9 +114,18 @@ enum MCPServer {
                 let timeout = min(max((arguments["timeout_seconds"] as? Double) ?? 300, 1), 1800)
                 let r = try request(BrokerRequest(op: .resolve, cwd: cwd, environment: environment,
                                                   command: ["/bin/sh", "-c", command], viaMCP: true))
-                let result = CommandRunner.capture(shell: command, directory: cwd, extraEnvironment: r.values ?? [:], timeout: timeout)
+                let result = CommandRunner.capture(shell: command, directory: cwd, extraEnvironment: r.values ?? [:], timeout: timeout,
+                                                   notSecret: LLMProxy.baseURLVariables(forProxied: r.proxiedNames ?? []))
+                if let sessions = r.proxySessions, !sessions.isEmpty {
+                    var end = BrokerRequest(op: .endProxy, cwd: cwd)
+                    end.proxySessions = sessions
+                    _ = try? BrokerClient.send(end)
+                }
                 var header = "exit code: \(result.status)\(result.timedOut ? " (timed out after \(Int(timeout)) s)" : "")"
                 header += "\ninjected: \((r.values ?? [:]).keys.sorted().joined(separator: ", "))"
+                if let proxied = r.proxiedNames, !proxied.isEmpty {
+                    header += "\nvia local proxy (the command has a placeholder, not the key): \(proxied.joined(separator: ", "))"
+                }
                 if let unmaskable = r.unmaskable, !unmaskable.isEmpty {
                     header += "\nnote: \(unmaskable.joined(separator: ", ")) are too short to mask"
                 }

@@ -74,7 +74,7 @@ struct KeyDetail: View {
                 } else {
                     VStack(alignment: .leading) {
                         ForEach(identities) { identity in
-                            Label("Cloudflare identity \(identity.name) (\(identity.boundPaths.count) folder\(identity.boundPaths.count == 1 ? "" : "s"))", systemImage: "person.badge.key")
+                            Label("\(identity.provider.displayName) account \(identity.name) (\(identity.boundPaths.count) folder\(identity.boundPaths.count == 1 ? "" : "s"))", systemImage: "person.badge.key")
                                 .font(.callout)
                         }
                         ForEach(usages) { usage in

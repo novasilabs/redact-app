@@ -14,11 +14,20 @@ USAGE
   redact ls [--env E]                   list variable names (never values)
   redact set NAME [--env E]             set a value (read from stdin, or prompted without echo)
   redact rm NAME [--env E]              remove a variable
-  redact run [--env E] [--mask|--no-mask] -- CMD [ARGS...]
+  redact run [--env E] [--mask|--no-mask] [--llm-proxy] -- CMD [ARGS...]
                                         run CMD with the project's variables injected
-  redact id ls                          list Cloudflare identities and their folders
-  redact id which                       which identity applies in this folder
+                                        (--llm-proxy: OpenAI/Anthropic keys stay in Redact; always on for agents)
+  redact id ls                          list identities (accounts) and their folders
+  redact id which                       which accounts apply in this folder
+  redact id add PROVIDER NAME           add a GitHub / Vercel / Supabase / Cloudflare token or AWS profile
   redact id bind NAME [dir]             bind an identity to a folder (default: this folder)
+  redact push --to HOST [--env E] [--target T] [--dry-run]
+                                        send secrets to cloudflare | github | vercel | supabase | aws
+  redact scan [PATH...] [--history] [--shell] [--ai] [--all]
+                                        find leaked secrets (vault values and known key formats)
+  redact hook install | uninstall       git pre-commit hook that blocks commits containing secrets
+  redact hook zsh | bash [--wrap wrangler,gh,vercel,supabase]
+                                        shell integration: eval "$(redact hook zsh)" in ~/.zshrc
   redact activity                       recent requests: who ran what, with which variable names
   redact lock | unlock
   redact mcp                            MCP server for AI agents (names only, never values)
@@ -132,6 +141,7 @@ case "status":
     if let pinned = response.pinnedAccount {
         print("account:   \(pinned) (pinned by \(((response.pinnedAccountFile ?? "") as NSString).lastPathComponent))")
     }
+    for identity in response.activeIdentities ?? [] { print("identity:  \(identity)") }
 
 case "lock":
     _ = send(BrokerRequest(op: .lock, cwd: cwd))
@@ -185,14 +195,38 @@ case "run":
     let environment = takeOption("--env", from: &options)
     let forceMask = takeFlag("--mask", from: &options)
     let noMask = takeFlag("--no-mask", from: &options)
+    let ifAny = takeFlag("--if-any", from: &options)
+    let identityOnly = takeFlag("--identity-only", from: &options)
+    let llmProxy = takeFlag("--llm-proxy", from: &options)
     let agent = PeerIdentity.agentInCurrentProcessTree
     if noMask && agent != nil { fail("--no-mask is not allowed when an AI agent (\(agent!)) is running this command") }
 
-    let response = send(BrokerRequest(op: .resolve, cwd: cwd, environment: environment, command: commandLine))
+    var resolveRequest = BrokerRequest(op: .resolve, cwd: cwd, environment: environment, command: commandLine)
+    resolveRequest.ifAny = ifAny ? true : nil
+    resolveRequest.identityOnly = identityOnly ? true : nil
+    resolveRequest.llmProxy = llmProxy ? true : nil
+    let response: BrokerResponse
+    if ifAny {
+        // Wrappers: never start the app just to find there's nothing to inject.
+        guard let direct = try? BrokerClient.send(resolveRequest) else {
+            exit(CommandRunner.run(commandLine, extraEnvironment: [:], mask: false))
+        }
+        if !direct.ok { fail(direct.error ?? "request failed") }
+        response = direct
+    } else {
+        response = send(resolveRequest)
+    }
     let values = response.values ?? [:]
     let interactiveHuman = agent == nil && isatty(STDOUT_FILENO) != 0 && isatty(STDERR_FILENO) != 0
     let mask = forceMask || !(noMask || interactiveHuman)
-    exit(CommandRunner.run(commandLine, extraEnvironment: values, mask: mask))
+    let status = CommandRunner.run(commandLine, extraEnvironment: values, mask: mask,
+                                   notSecret: LLMProxy.baseURLVariables(forProxied: response.proxiedNames ?? []))
+    if let sessions = response.proxySessions, !sessions.isEmpty {
+        var end = BrokerRequest(op: .endProxy, cwd: cwd)
+        end.proxySessions = sessions
+        _ = try? BrokerClient.send(end)
+    }
+    exit(status)
 
 case "id":
     let sub = args.first ?? "ls"
@@ -200,14 +234,49 @@ case "id":
     case "ls":
         let response = send(BrokerRequest(op: .identities, cwd: cwd))
         for identity in response.identities ?? [] {
-            let storage = identity.mode == "wrangler-profile" ? (identity.encrypted == true ? "keychain" : "plaintext file") : "Redact vault"
-            print("\(identity.name)  [\(identity.mode), \(storage)]")
+            let storage: String
+            switch identity.mode {
+            case "wrangler-profile": storage = identity.encrypted == true ? "keychain" : "plaintext file"
+            case "aws-profile": storage = "AWS profile \(identity.scope ?? "")"
+            default: storage = "token in Redact vault"
+            }
+            print("\(identity.name)  [\(identity.provider), \(storage)]")
             for path in identity.boundPaths { print("    \((path as NSString).abbreviatingWithTildeInPath)") }
         }
-        print("\nactive here: \(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+        print("\nactive here: cloudflare: \(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+        for identity in response.activeIdentities ?? [] { print("             \(identity)") }
+    case "add":
+        var rest = Array(args.dropFirst())
+        let scope = takeOption("--scope", from: &rest) ?? takeOption("--account", from: &rest)
+        let profile = takeOption("--profile", from: &rest)
+        let fromGH = takeOption("--from-gh", from: &rest)
+        guard rest.count == 2 else {
+            fail("""
+            usage: redact id add PROVIDER NAME [--scope S]     token read from stdin or prompted
+                   redact id add github NAME --from-gh USER     use a token from `gh auth token --user USER`
+                   redact id add aws NAME --profile PROFILE     use a profile from ~/.aws/config
+              PROVIDER: cloudflare | github | vercel | supabase | aws   (--scope: Cloudflare account ID)
+            """)
+        }
+        let provider = rest[0].lowercased()
+        var token: String?
+        if provider == "aws" {
+            guard profile != nil else { fail("AWS identities need --profile NAME") }
+        } else if let fromGH {
+            let result = shell("/usr/bin/env", ["gh", "auth", "token", "--user", fromGH])
+            guard result.status == 0 else { fail("gh auth token failed: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines))") }
+            token = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            token = readSecretValue(name: "\(provider) token")
+        }
+        var request = BrokerRequest(op: .addIdentity, cwd: cwd, name: rest[1], value: token)
+        request.provider = provider
+        request.scope = provider == "aws" ? profile : scope
+        print(send(request).message ?? "OK")
     case "which":
         let response = send(BrokerRequest(op: .status, cwd: cwd))
-        print("\(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+        print("cloudflare: \(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+        for identity in response.activeIdentities ?? [] { print(identity) }
         if let pinned = response.pinnedAccount {
             print("account \(pinned) pinned by \(response.pinnedAccountFile ?? "")")
         } else {
@@ -219,7 +288,7 @@ case "id":
         let response = send(BrokerRequest(op: .bindIdentity, cwd: cwd, name: args[1], path: dir))
         print(response.message ?? "OK")
     default:
-        fail("unknown id command \(sub). Try: redact id ls | which | bind NAME [dir]")
+        fail("unknown id command \(sub). Try: redact id ls | which | add | bind NAME [dir]")
     }
 
 case "activity":
@@ -234,6 +303,18 @@ case "activity":
 
 case "mcp":
     MCPServer.run()
+
+case "scan":
+    ScanCommand.run(args, cwd: cwd)
+
+case "hook":
+    HookCommand.run(args, cwd: cwd)
+
+case "push":
+    PushCommand.run(args, cwd: cwd)
+
+case "_prompt":
+    PromptCommand.run(cwd: cwd, shellFormat: args.contains("--shell"))
 
 default:
     fail("unknown command \(command). Run `redact --help`.")

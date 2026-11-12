@@ -76,14 +76,74 @@ public struct Project: Codable, Identifiable, Sendable, Equatable, Hashable {
 /// A cloud account login that can be bound to folders.
 public struct Identity: Codable, Identifiable, Sendable, Equatable, Hashable {
     public enum Provider: String, Codable, CaseIterable, Sendable {
-        case cloudflare
+        case cloudflare, github, vercel, supabase, aws
+
+        public var displayName: String {
+            switch self {
+            case .cloudflare: "Cloudflare"
+            case .github: "GitHub"
+            case .vercel: "Vercel"
+            case .supabase: "Supabase"
+            case .aws: "AWS"
+            }
+        }
+
+        /// The CLI this identity is for (used by shell wrappers and `push`).
+        public var tool: String {
+            switch self {
+            case .cloudflare: "wrangler"
+            case .github: "gh"
+            case .vercel: "vercel"
+            case .supabase: "supabase"
+            case .aws: "aws"
+            }
+        }
+
+        /// What the optional scope field means for this provider.
+        public var scopeLabel: String? {
+            switch self {
+            case .cloudflare: "Account ID"
+            case .vercel: "Team (shown only)"
+            case .github, .supabase, .aws: nil
+            }
+        }
     }
 
     public enum Mode: Codable, Sendable, Equatable, Hashable {
         /// Wrangler-managed OAuth profile (`wrangler auth create <name>`). Bindings live in Wrangler.
         case wranglerProfile(name: String)
         /// API token stored as a vault item, injected by `redact run` for bound folders.
+        /// `accountID` is the provider's scope (Cloudflare account ID; display-only elsewhere).
         case apiToken(itemID: UUID, accountID: String?)
+        /// AWS: a named profile from ~/.aws/config. No secret is stored; AWS_PROFILE is set.
+        case awsProfile(name: String)
+    }
+
+    /// Environment variables this identity sets for a child process. `token` is the vault item's value.
+    public func environment(token: String?) -> [String: String] {
+        switch mode {
+        case .wranglerProfile:
+            return [:]
+        case let .awsProfile(name):
+            return ["AWS_PROFILE": name]
+        case let .apiToken(_, scope):
+            guard let token, !token.isEmpty else { return [:] }
+            switch provider {
+            case .cloudflare:
+                var env = ["CLOUDFLARE_API_TOKEN": token]
+                if let scope, !scope.isEmpty { env["CLOUDFLARE_ACCOUNT_ID"] = scope }
+                return env
+            case .github: return ["GH_TOKEN": token]
+            case .vercel: return ["VERCEL_TOKEN": token]
+            case .supabase: return ["SUPABASE_ACCESS_TOKEN": token]
+            case .aws: return [:]
+            }
+        }
+    }
+
+    public var tokenItemID: UUID? {
+        if case let .apiToken(id, _) = mode { return id }
+        return nil
     }
 
     public var id: UUID
@@ -177,15 +237,35 @@ public struct VaultData: Codable, Sendable, Equatable {
         items.filter { $0.linkedItemID == item.id }
     }
 
-    /// The API-token identity bound to `directory`, if any (longest bound path wins).
+    /// The Cloudflare API-token identity bound to `directory`, if any (longest bound path wins).
     public func tokenIdentity(for directory: String) -> (Identity, String)? {
+        boundIdentities(for: directory)[.cloudflare]
+    }
+
+    /// For each provider, the identity bound to `directory` or its nearest ancestor.
+    public func boundIdentities(for directory: String) -> [Identity.Provider: (Identity, String)] {
         let dir = WranglerProfiles.realPath(directory)
-        var best: (Identity, String)?
+        var best: [Identity.Provider: (Identity, String)] = [:]
         for identity in identities {
             for path in identity.boundPaths where dir == path || dir.hasPrefix(path + "/") {
-                if best == nil || path.count > best!.1.count { best = (identity, path) }
+                if let current = best[identity.provider], current.1.count >= path.count { continue }
+                best[identity.provider] = (identity, path)
             }
         }
         return best
+    }
+
+    /// Environment from every identity bound to `directory`, and which provider each name belongs to.
+    public func identityEnvironment(for directory: String) -> (values: [String: String], providers: [String: Identity.Provider]) {
+        var values: [String: String] = [:]
+        var providers: [String: Identity.Provider] = [:]
+        for (provider, (identity, _)) in boundIdentities(for: directory) {
+            let token = identity.tokenItemID.flatMap { id in items.first { $0.id == id }?.value }
+            for (name, value) in identity.environment(token: token) {
+                values[name] = value
+                providers[name] = provider
+            }
+        }
+        return (values, providers)
     }
 }

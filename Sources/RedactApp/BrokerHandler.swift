@@ -6,10 +6,12 @@ import RedactCore
 final class BrokerHandler {
     let vault: VaultController
     let approvals: ApprovalCenter
+    let llmProxy: LLMProxy
 
-    init(vault: VaultController, approvals: ApprovalCenter) {
+    init(vault: VaultController, approvals: ApprovalCenter, llmProxy: LLMProxy) {
         self.vault = vault
         self.approvals = approvals
+        self.llmProxy = llmProxy
     }
 
     func handle(_ request: BrokerRequest, peer: PeerIdentity) async -> BrokerResponse {
@@ -21,8 +23,33 @@ final class BrokerHandler {
         case .unlock:
             guard vault.state != .noVault else { return .failure(Self.noVaultMessage) }
             return await vault.unlock() ? status(request) : .failure(vault.lastError ?? "Unlock failed.")
-        case .identities: return identities(request)
-        case .bindIdentity: return await bindIdentity(request)
+        case .endProxy:
+            llmProxy.endSessions(request.proxySessions ?? [])
+            return BrokerResponse(ok: true)
+        case .identities:
+            if vault.state == .locked { _ = await vault.unlock(reason: "list your accounts") }
+            return identities(request)
+        case .bindIdentity:
+            // Rebinding could send an agent's deploys to another account: needs the user's approval.
+            if let agent = request.viaMCP == true ? (peer.agentGuess ?? "An MCP agent") : peer.agentGuess {
+                if request.viaMCP == true { return .failure("Agents can't change identity bindings.") }
+                let action = "redact id bind \(request.name ?? "") \(request.path ?? request.cwd)"
+                let decision = await approvals.ask(ApprovalRequest(
+                    agent: agent, command: action, directory: request.cwd, project: (request.cwd as NSString).lastPathComponent,
+                    environment: "cloud identity", variableNames: ["(changes which Cloudflare account this folder uses)"],
+                    callerPath: peer.path,
+                    callerChain: peer.ancestors.map { ($0.path as NSString).lastPathComponent }.joined(separator: " ← "),
+                    callerSigned: "Signature: \(peer.signingIdentifier ?? "unsigned")", allowsGrant: false))
+                guard decision != .deny, await approvals.confirmWithOwner(reason: "let \(agent) change a Cloudflare binding") else {
+                    return .failure("The user denied this change.")
+                }
+            }
+            return await bindIdentity(request)
+        case .scan where request.scan?.text != nil && vault.state != .unlocked:
+            // Pre-commit: never prompt. The CLI falls back to format-only scanning.
+            var response = BrokerResponse(ok: true)
+            response.locked = true
+            return response
         default: break
         }
 
@@ -40,13 +67,14 @@ final class BrokerHandler {
         vault.touch()
 
         // Agents must not change the vault on their own: they could replace a key with one they control.
-        if let agent, [.set, .remove, .importFolder, .initProject].contains(request.op) {
+        if let agent, [.set, .remove, .importFolder, .initProject, .addIdentity].contains(request.op) {
             if request.viaMCP == true { return .failure("Agents can't change the vault. Ask the user to do it in Redact.") }
             let action: String
             switch request.op {
             case .set: action = "redact set \(request.name ?? "")\(request.environment.map { " --env \($0)" } ?? "")"
             case .remove: action = "redact rm \(request.name ?? "")\(request.environment.map { " --env \($0)" } ?? "")"
             case .importFolder: action = "redact import \(request.path ?? request.cwd)"
+            case .addIdentity: action = "redact id add \(request.provider ?? "") \(request.name ?? "")"
             default: action = "redact init \(request.path ?? request.cwd)"
             }
             let preview = previewForApproval(request)
@@ -69,8 +97,16 @@ final class BrokerHandler {
             var response = BrokerResponse(ok: true)
             response.activity = Array(vault.data.activity.prefix(50))
             return response
+        case .scan:
+            guard let options = request.scan else { return .failure("Nothing to scan.") }
+            let secrets = Self.scanSecrets(vault.data)
+            let findings = await Task.detached { HealthScan.run(options, secrets: secrets) }.value
+            var response = BrokerResponse(ok: true)
+            response.findings = findings
+            return response
         case .set: return set(request)
         case .remove: return remove(request)
+        case .addIdentity: return addIdentity(request)
         case .initProject: return initProject(request)
         case .importFolder: return importFolder(request)
         default: return .failure("Unsupported request.")
@@ -79,13 +115,40 @@ final class BrokerHandler {
 
     static let noVaultMessage = "No vault yet. Open Redact.app to create one."
 
+    /// Values to look for when scanning, labelled so findings say exactly which secret leaked.
+    static func scanSecrets(_ data: VaultData) -> [String: String] {
+        var secrets: [String: String] = [:]
+        for item in data.items {
+            switch item.kind {
+            case .apiKey, .note:
+                secrets[item.name] = item.value
+            case .variable:
+                guard item.linkedItemID == nil else { continue } // the shared key is scanned under its own name
+                let project = data.projects.first { $0.id == item.projectID }?.name ?? "?"
+                secrets["\(item.name) (\(project) · \(item.environment ?? ""))"] = item.value
+            case .backupCodes:
+                continue
+            }
+        }
+        return secrets
+    }
+
     // MARK: - Status and listing
 
     private func status(_ request: BrokerRequest) -> BrokerResponse {
         var response = BrokerResponse(ok: true)
         response.vaultExists = vault.state != .noVault
         response.locked = vault.state != .unlocked
-        if vault.state == .unlocked, let project = vault.data.project(containing: request.cwd) {
+        var index = VaultData()
+        index.projects = vault.state == .unlocked ? vault.data.projects : vault.projectIndex
+        index.identities = vault.state == .unlocked ? vault.data.identities : vault.identityIndex
+        let bound = index.boundIdentities(for: request.cwd)
+        let active = bound.sorted { $0.key.rawValue < $1.key.rawValue }
+            .filter { $0.key != .cloudflare }
+            .map { "\($0.key.rawValue): \($0.value.0.name)" }
+        response.activeIdentities = active.isEmpty ? nil : active
+        if let (aws, _) = bound[.aws], case let .awsProfile(name) = aws.mode { response.awsProfile = name }
+        if let project = index.project(containing: request.cwd) {
             response.project = project.name
             response.projectPath = project.path
             response.environments = project.environments
@@ -129,6 +192,7 @@ final class BrokerHandler {
         response.project = project.name
         response.projectPath = project.path
         response.environments = project.environments
+        response.environment = request.environment ?? project.defaultEnvironment
         response.variables = environments.flatMap { env in
             vault.data.variables(projectID: project.id, environment: env).map { item in
                 VariableInfo(name: item.name, environment: env,
@@ -147,6 +211,26 @@ final class BrokerHandler {
 
     private func resolve(_ request: BrokerRequest, peer: PeerIdentity, agent: String?) async -> BrokerResponse {
         let commandText = (request.command ?? []).joined(separator: " ")
+
+        // Tool wrappers while locked: if no identity is bound here, pass through without a Touch ID prompt.
+        if request.ifAny == true, request.identityOnly == true, vault.state == .locked {
+            var index = VaultData()
+            index.identities = vault.identityIndex
+            if !vault.identityIndex.isEmpty, index.boundIdentities(for: request.cwd).isEmpty {
+                var response = BrokerResponse(ok: true)
+                response.values = [:]
+                return response
+            }
+        }
+
+        // Shell wrappers: nothing to inject here, so don't bother the user.
+        if request.ifAny == true, vault.state == .unlocked,
+           vault.data.project(containing: request.cwd) == nil || request.identityOnly == true,
+           vault.data.boundIdentities(for: request.cwd).isEmpty {
+            var response = BrokerResponse(ok: true)
+            response.values = [:]
+            return response
+        }
 
         // Agents get a decision panel before anything else (even before unlocking).
         var decision: ApprovalDecision = .once
@@ -193,7 +277,7 @@ final class BrokerHandler {
         var warnings: [String] = []
         let project = vault.data.project(containing: request.cwd)
         let environment = request.environment ?? project?.defaultEnvironment ?? "development"
-        if let project {
+        if let project, request.identityOnly != true {
             guard project.environments.contains(environment) else {
                 return .failure("Project \(project.name) has no environment \"\(environment)\". It has: \(project.environments.joined(separator: ", ")).")
             }
@@ -202,20 +286,53 @@ final class BrokerHandler {
             response.projectPath = project.path
         }
 
-        // Cloud identity in API-token mode: inject credentials for this folder.
-        if let (identity, _) = vault.data.tokenIdentity(for: request.cwd),
-           case let .apiToken(itemID, accountID) = identity.mode,
-           let token = vault.data.items.first(where: { $0.id == itemID }) {
-            values["CLOUDFLARE_API_TOKEN"] = token.value
-            if let accountID, !accountID.isEmpty { values["CLOUDFLARE_ACCOUNT_ID"] = accountID }
+        // Cloud identities bound to this folder (Cloudflare, GitHub, Vercel, Supabase, AWS).
+        let identityEnv = vault.data.identityEnvironment(for: request.cwd)
+        if !identityEnv.values.isEmpty {
+            for (name, value) in identityEnv.values { values[name] = value }
+            response.identityNames = identityEnv.values.keys.sorted()
+            response.identityProviders = identityEnv.providers.mapValues(\.rawValue)
         }
 
-        if project == nil && values.isEmpty { return .failure(Self.noProject(request.cwd)) }
+        if (project == nil || request.identityOnly == true) && values.isEmpty {
+            if request.ifAny == true {
+                response.values = [:]
+                return response
+            }
+            return .failure(Self.noProject(request.cwd))
+        }
 
         if let agent, decision == .fifteenMinutes, let project {
             approvals.addGrant(agent: agent, projectPath: project.path, environment: environment, minutes: 15)
         }
-        let names = values.keys.sorted()
+        // OpenAI / Anthropic keys: the command gets a placeholder and a local base URL, never the key.
+        if agent != nil || request.llmProxy == true {
+            var proxied: [String] = []
+            var sessions: [String] = []
+            for provider in LLMProxy.Provider.allCases {
+                guard let key = values[provider.keyVariable], !key.isEmpty,
+                      values[provider.baseURLVariable] == nil else { continue } // custom base URL (e.g. Azure): leave alone
+                do {
+                    let port = try llmProxy.start()
+                    let placeholder = llmProxy.createSession(provider: provider, key: key, label: commandText)
+                    values[provider.keyVariable] = placeholder
+                    values[provider.baseURLVariable] = provider.baseURL(port: port)
+                    proxied.append(provider.keyVariable)
+                    sessions.append(placeholder)
+                } catch {
+                    warnings.append("LLM proxy unavailable (\(error.localizedDescription)); \(provider.keyVariable) not injected.")
+                    values.removeValue(forKey: provider.keyVariable)
+                }
+            }
+            if !proxied.isEmpty {
+                response.proxiedNames = proxied
+                response.proxySessions = sessions
+            }
+        }
+
+        let names = values.keys.sorted().map { name in
+            (response.proxiedNames ?? []).contains(name) ? "\(name) (via proxy)" : name
+        }
         logActivity(peer: peer, agent: agent, command: commandText, request: request, names: names,
                     outcome: agent == nil ? .autoApproved : (usedGrant ? .granted : .approved))
 
@@ -232,6 +349,13 @@ final class BrokerHandler {
 
     /// Names and project shown in the approval panel. Works while locked (shows what we can).
     private func previewForApproval(_ request: BrokerRequest) -> (project: String, projectPath: String, environment: String, names: [String]) {
+        if request.identityOnly == true, vault.state == .unlocked {
+            let names = vault.data.identityEnvironment(for: request.cwd).values.keys.sorted()
+            let project = vault.data.project(containing: request.cwd)
+            // Same environment key as the grant, so "Allow for 15 min" covers wrapper runs too.
+            let environment = request.environment ?? project?.defaultEnvironment ?? "development"
+            return (project?.name ?? (request.cwd as NSString).lastPathComponent, project?.path ?? request.cwd, environment, names)
+        }
         guard vault.state == .unlocked, let project = vault.data.project(containing: request.cwd) else {
             return ((request.cwd as NSString).lastPathComponent, request.cwd, request.environment ?? "default",
                     vault.state == .unlocked ? [] : ["(vault is locked: names shown after unlock)"])
@@ -348,12 +472,48 @@ final class BrokerHandler {
 
     // MARK: - Identities
 
+    private func addIdentity(_ request: BrokerRequest) -> BrokerResponse {
+        guard let providerName = request.provider, let provider = Identity.Provider(rawValue: providerName.lowercased()) else {
+            return .failure("Unknown provider. Use one of: \(Identity.Provider.allCases.map(\.rawValue).joined(separator: ", ")).")
+        }
+        guard let name = request.name, !name.isEmpty,
+              name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else {
+            return .failure("Identity names may contain letters, numbers, - and _.")
+        }
+        let wranglerNames = WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot()).profiles().map(\.name)
+        guard !vault.data.identities.contains(where: { $0.name == name }), !wranglerNames.contains(name) else {
+            return .failure("An identity called \(name) already exists. Names must be unique so `redact id bind` is unambiguous.")
+        }
+        let identity: Identity
+        var item: Item?
+        if provider == .aws {
+            guard let profile = request.scope, !profile.isEmpty else { return .failure("AWS identities need --profile NAME (from ~/.aws/config).") }
+            identity = Identity(provider: .aws, name: name, mode: .awsProfile(name: profile))
+        } else {
+            guard let token = request.value?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+                return .failure("No token given.")
+            }
+            let tokenItem = Item(kind: .apiKey, name: "\(provider.displayName) token · \(name)", value: token, tags: [provider.rawValue, "identity"])
+            item = tokenItem
+            identity = Identity(provider: provider, name: name, mode: .apiToken(itemID: tokenItem.id, accountID: request.scope))
+        }
+        vault.update { data in
+            if let item { data.items.append(item) }
+            data.identities.append(identity)
+        }
+        var response = BrokerResponse(ok: true)
+        response.message = "Added \(provider.displayName) identity \(name). Bind it to a folder with `redact id bind \(name) [dir]`."
+        return response
+    }
+
     private func activeIdentity(for cwd: String) -> (name: String?, source: String?) {
-        if vault.state == .unlocked, let (identity, path) = vault.data.tokenIdentity(for: cwd) {
+        var index = VaultData()
+        index.identities = vault.state == .unlocked ? vault.data.identities : vault.identityIndex
+        if let (identity, path) = index.tokenIdentity(for: cwd) {
             return (identity.name, "Redact API token, bound at \(path)")
         }
         let resolved = WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot()).resolve(directory: cwd)
-        let caveat = vault.state == .unlocked ? "" : " (vault locked: Redact API-token identities not checked; run `redact unlock`)"
+        let caveat = vault.state == .unlocked || !vault.identityIndex.isEmpty ? "" : " (vault locked: Redact API-token identities not checked; run `redact unlock`)"
         return ("wrangler:\(resolved.profile)", resolved.source + caveat)
     }
 
@@ -367,9 +527,16 @@ final class BrokerHandler {
         }
         if vault.state == .unlocked {
             list += vault.data.identities.compactMap { identity in
-                guard case .apiToken = identity.mode else { return nil }
-                return IdentityInfo(name: identity.name, provider: identity.provider.rawValue, mode: "api-token",
-                                    boundPaths: identity.boundPaths, encrypted: true)
+                switch identity.mode {
+                case let .apiToken(_, scope):
+                    return IdentityInfo(name: identity.name, provider: identity.provider.rawValue, mode: "api-token",
+                                        boundPaths: identity.boundPaths, encrypted: true, scope: scope)
+                case let .awsProfile(name):
+                    return IdentityInfo(name: identity.name, provider: "aws", mode: "aws-profile",
+                                        boundPaths: identity.boundPaths, encrypted: nil, scope: name)
+                case .wranglerProfile:
+                    return nil
+                }
             }
         }
         var response = status(request)
@@ -390,13 +557,18 @@ final class BrokerHandler {
     private func bindIdentity(_ request: BrokerRequest) async -> BrokerResponse {
         guard let name = request.name else { return .failure("Which identity?") }
         let directory = WranglerProfiles.realPath(request.path ?? request.cwd)
+        let isWranglerProfile = WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot()).profiles().contains { $0.name == name }
+        if !isWranglerProfile, vault.state == .locked {
+            guard await vault.unlock(reason: "bind \(name) to a folder") else { return .failure(vault.lastError ?? "Vault is locked.") }
+        }
         if vault.state == .unlocked, let index = vault.data.identities.firstIndex(where: { $0.name == name }) {
             vault.update { data in
                 for i in data.identities.indices { data.identities[i].boundPaths.removeAll { $0 == directory } }
                 data.identities[index].boundPaths.append(directory)
             }
             var response = BrokerResponse(ok: true)
-            response.message = "Bound \(name) (API token) to \(directory)."
+            let provider = vault.data.identities[index].provider.displayName
+            response.message = "Bound \(provider) identity \(name) to \(directory)."
             return response
         }
         let store = WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot())

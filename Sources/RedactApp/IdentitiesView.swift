@@ -44,12 +44,18 @@ struct IdentitiesView: View {
                     .padding(8)
                 }
 
-                GroupBox("API tokens (Advanced)") {
+                GroupBox("Other accounts") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("A scoped token stored in this vault and injected by `redact run` as CLOUDFLARE_API_TOKEN. Works with any Wrangler version and can be limited to exact permissions.")
+                        Text("GitHub, Vercel and Supabase tokens and Cloudflare API tokens are stored in this vault and set for bound folders by `redact run` (and by the shell wrappers). AWS identities just pick a profile from ~/.aws/config.")
                             .font(.callout).foregroundStyle(.secondary)
-                        ForEach(vault.data.identities) { identity in tokenRow(identity) }
-                        Button("Add API token identity…") { showTokenSheet = true }
+                        ForEach(Identity.Provider.allCases, id: \.self) { provider in
+                            let list = vault.data.identities.filter { $0.provider == provider }
+                            if !list.isEmpty {
+                                Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
+                                ForEach(list) { identity in tokenRow(identity) }
+                            }
+                        }
+                        Button("Add account…") { showTokenSheet = true }
                     }
                     .padding(8)
                 }
@@ -147,10 +153,15 @@ struct IdentitiesView: View {
     private func tokenRow(_ identity: Identity) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: "key").foregroundStyle(.tint)
+                Image(systemName: Self.icon(identity.provider)).foregroundStyle(.tint)
                 Text(identity.name).font(.headline)
-                if case let .apiToken(_, accountID) = identity.mode, let accountID {
-                    Text(accountID).font(.caption.monospaced()).foregroundStyle(.secondary)
+                switch identity.mode {
+                case let .apiToken(_, accountID):
+                    if let accountID { Text(accountID).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                case let .awsProfile(name):
+                    Text("profile \(name)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                case .wranglerProfile:
+                    EmptyView()
                 }
                 Spacer()
                 Button("Bind folder…") { bindToken(identity) }
@@ -176,6 +187,16 @@ struct IdentitiesView: View {
                 }
                 .padding(.leading, 24)
             }
+        }
+    }
+
+    static func icon(_ provider: Identity.Provider) -> String {
+        switch provider {
+        case .cloudflare: "cloud"
+        case .github: "chevron.left.forwardslash.chevron.right"
+        case .vercel: "triangle"
+        case .supabase: "cylinder"
+        case .aws: "server.rack"
         }
     }
 
@@ -259,35 +280,85 @@ struct IdentitiesView: View {
 struct TokenIdentitySheet: View {
     @EnvironmentObject var vault: VaultController
     @Environment(\.dismiss) private var dismiss
+    @State private var provider: Identity.Provider = .github
     @State private var name = ""
     @State private var token = ""
-    @State private var accountID = ""
+    @State private var scope = ""
+    @State private var awsProfile = ""
     @State private var status: String?
     @State private var verifying = false
+    @State private var error: String?
+
+    static var awsProfiles: [String] {
+        let path = NSHomeDirectory() + "/.aws/config"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        return text.split(whereSeparator: \.isNewline).compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("["), trimmed.hasSuffix("]") else { return nil }
+            let inner = trimmed.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
+            if inner == "default" { return "default" }
+            return inner.hasPrefix("profile ") ? String(inner.dropFirst(8)).trimmingCharacters(in: .whitespaces) : nil
+        }
+    }
+
+    var hint: String {
+        switch provider {
+        case .cloudflare: "dash.cloudflare.com → My Profile → API Tokens. Scope it to one account and the permissions you deploy with."
+        case .github: "github.com → Settings → Developer settings → Fine-grained tokens. Or in a terminal: redact id add github NAME --from-gh USER"
+        case .vercel: "vercel.com → Account Settings → Tokens. Scope it to the team you deploy to."
+        case .supabase: "supabase.com/dashboard/account/tokens"
+        case .aws: "Pick a profile from ~/.aws/config. Redact sets AWS_PROFILE; your credentials stay with the AWS CLI."
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add API token identity").font(.title2.bold())
-            Text("Create a token at dash.cloudflare.com → My Profile → API Tokens. Scope it to the account and permissions this project needs.")
-                .font(.callout).foregroundStyle(.secondary)
-            TextField("Name (e.g. acme-deploy)", text: $name)
-            SecureField("API token", text: $token)
-            TextField("Account ID (optional but recommended)", text: $accountID)
+            Text("Add account").font(.title2.bold())
+            Picker("Provider", selection: $provider) {
+                ForEach(Identity.Provider.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            Text(hint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TextField("Name (e.g. work, acme)", text: $name)
+            if provider == .aws {
+                let profiles = Self.awsProfiles
+                if profiles.isEmpty {
+                    TextField("Profile name", text: $awsProfile)
+                } else {
+                    Picker("Profile", selection: $awsProfile) {
+                        Text("Choose…").tag("")
+                        ForEach(profiles, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+            } else {
+                SecureField("Token", text: $token)
+                if let label = provider.scopeLabel {
+                    TextField(provider == .cloudflare ? "\(label) (optional but recommended)" : "\(label) (optional)", text: $scope)
+                }
+            }
             if let status { Text(status).font(.callout) }
+            if let error { Text(error).font(.callout).foregroundStyle(.red) }
             HStack {
-                Button("Verify token") { verify() }.disabled(token.isEmpty || verifying)
+                if provider == .cloudflare {
+                    Button("Verify token") { verifyCloudflare() }.disabled(token.isEmpty || verifying)
+                }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(name.isEmpty || token.isEmpty)
+                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(!canSave)
             }
         }
         .textFieldStyle(.roundedBorder)
         .padding(20)
-        .frame(width: 520)
+        .frame(width: 560)
+    }
+
+    var canSave: Bool {
+        let validName = !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        return validName && (provider == .aws ? !awsProfile.isEmpty : !token.isEmpty)
     }
 
     /// Calls Cloudflare's token verify endpoint with the user's own token (sent only to api.cloudflare.com).
-    private func verify() {
+    private func verifyCloudflare() {
         verifying = true
         var request = URLRequest(url: URL(string: "https://api.cloudflare.com/client/v4/user/tokens/verify")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -306,11 +377,22 @@ struct TokenIdentitySheet: View {
     }
 
     private func save() {
-        let item = Item(kind: .apiKey, name: "Cloudflare token · \(name)", value: token.trimmingCharacters(in: .whitespacesAndNewlines), tags: ["cloudflare", "identity"])
-        let identity = Identity(name: name, mode: .apiToken(itemID: item.id, accountID: accountID.isEmpty ? nil : accountID))
-        vault.update { data in
-            data.items.append(item)
-            data.identities.append(identity)
+        if vault.data.identities.contains(where: { $0.name == name }) {
+            error = "An account called \(name) already exists. Names must be unique."
+            return
+        }
+        if provider == .aws {
+            let identity = Identity(provider: .aws, name: name, mode: .awsProfile(name: awsProfile))
+            vault.update { $0.identities.append(identity) }
+        } else {
+            let item = Item(kind: .apiKey, name: "\(provider.displayName) token · \(name)",
+                            value: token.trimmingCharacters(in: .whitespacesAndNewlines), tags: [provider.rawValue, "identity"])
+            let identity = Identity(provider: provider, name: name,
+                                    mode: .apiToken(itemID: item.id, accountID: scope.isEmpty ? nil : scope))
+            vault.update { data in
+                data.items.append(item)
+                data.identities.append(identity)
+            }
         }
         dismiss()
     }
