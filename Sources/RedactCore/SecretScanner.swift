@@ -26,6 +26,38 @@ public struct SecretScanner {
     struct Rule: Sendable {
         let name: String
         let regex: NSRegularExpression
+        /// Rejects matches that have the shape but are not secrets. Gets the match and the next line.
+        var accept: (@Sendable (String, String?) -> Bool)? = nil
+    }
+
+    /// A PEM header only counts when key material follows it (on the same line, as in JSON with
+    /// escaped newlines, or on the next line). Code that strips headers and docs with "..." do not.
+    static func hasKeyMaterial(_ match: String, line: String, next: String?) -> Bool {
+        let base64 = try! NSRegularExpression(pattern: #"[A-Za-z0-9+/]{40,}"#)
+        if let markerEnd = line.range(of: match)?.upperBound {
+            let after = String(line[markerEnd...]).replacingOccurrences(of: "\\n", with: "")
+            if base64.firstMatch(in: after, range: NSRange(after.startIndex..., in: after)) != nil { return true }
+        }
+        guard let next = next?.trimmingCharacters(in: .whitespaces) else { return false }
+        return next.range(of: #"^[A-Za-z0-9+/=]{40,}$"#, options: .regularExpression) != nil
+    }
+
+    static let firebaseClientConfigs: Set<String> = ["google-services.json", "GoogleService-Info.plist"]
+
+    static let localHosts: Set<String> = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "host.docker.internal"]
+    static let placeholderPasswords: Set<String> = ["password", "pass", "passwd", "secret", "postgres", "root", "changeme",
+                                                    "example", "user", "admin", "test", "your-password", "yourpassword"]
+
+    /// A database URL is a leak only with a real-looking password for a non-local host.
+    static func isRealDatabaseURL(_ url: String) -> Bool {
+        let parts = try! NSRegularExpression(pattern: #"://[^\s:/@]+:([^\s@/]+)@([^\s:/?#"'@]+)"#)
+        guard let m = parts.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)),
+              let pw = Range(m.range(at: 1), in: url), let host = Range(m.range(at: 2), in: url) else { return true }
+        let password = String(url[pw]), hostname = String(url[host]).lowercased()
+        if localHosts.contains(hostname) { return false }
+        if let first = password.first, "[<{$%*".contains(first) { return false }
+        if placeholderPasswords.contains(password.lowercased()) || Set(password) == ["x"] { return false }
+        return true
     }
 
     /// Known formats with low false-positive rates. Order: most specific first.
@@ -47,7 +79,14 @@ public struct SecretScanner {
         ("Hugging Face token", #"\bhf_[A-Za-z0-9]{34,}\b"#),
         ("SendGrid key", #"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b"#),
         ("Database URL with password", #"\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|rediss)://[^\s:/@]+:[^\s@/]{3,}@[^\s]+"#),
-    ].map { Rule(name: $0.0, regex: try! NSRegularExpression(pattern: $0.1)) }
+    ].map { name, pattern in
+        let regex = try! NSRegularExpression(pattern: pattern)
+        switch name {
+        case "Private key": return Rule(name: name, regex: regex, accept: nil)   // checked with the line, below
+        case "Database URL with password": return Rule(name: name, regex: regex) { match, _ in isRealDatabaseURL(match) }
+        default: return Rule(name: name, regex: regex)
+        }
+    }
 
     /// Vault values shorter than this are not scanned for (too many false hits, and a guessing oracle).
     public static let minimumValueLength = 12
@@ -68,14 +107,17 @@ public struct SecretScanner {
     public func scan(text: String, source: String, firstLine: Int = 1) -> [Finding] {
         var findings: [Finding] = []
         var lineNumber = firstLine - 1
-        text.enumerateLines { line, _ in
+        var lines: [String] = []
+        text.enumerateLines { line, _ in lines.append(line) }
+        for (index, line) in lines.enumerated() {
             lineNumber += 1
-            findings += self.scan(line: line, source: source, lineNumber: lineNumber)
+            findings += self.scan(line: line, source: source, lineNumber: lineNumber,
+                                  nextLine: index + 1 < lines.count ? lines[index + 1] : nil)
         }
         return findings
     }
 
-    public func scan(line: String, source: String, lineNumber: Int) -> [Finding] {
+    public func scan(line: String, source: String, lineNumber: Int, nextLine: String? = nil) -> [Finding] {
         guard !line.isEmpty, line.utf8.count < 100_000 else { return [] }
         var findings: [Finding] = []
         var masked = line
@@ -96,7 +138,13 @@ public struct SecretScanner {
         var seenRules = Set<String>()
         for rule in Self.rules {
             // Recompute: earlier replacements change the line's length.
-            let matches = rule.regex.matches(in: masked, range: NSRange(masked.startIndex..., in: masked))
+            let original = masked
+            let matches = rule.regex.matches(in: masked, range: NSRange(masked.startIndex..., in: masked)).filter { match in
+                guard let r = Range(match.range, in: original) else { return false }
+                let text = String(original[r])
+                if rule.name == "Private key" { return Self.hasKeyMaterial(text, line: original, next: nextLine) }
+                return rule.accept?(text, nextLine) ?? true
+            }
             guard !matches.isEmpty, !seenRules.contains(rule.name) else { continue }
             seenRules.insert(rule.name)
             for match in matches.reversed() {
@@ -134,6 +182,38 @@ public struct SecretScanner {
     }
 
     // MARK: - Files
+
+    /// Prefixes frameworks use for values that are bundled into client code on purpose.
+    static let publicPrefixes = ["NEXT_PUBLIC_", "EXPO_PUBLIC_", "VITE_", "PUBLIC_", "REACT_APP_", "NUXT_PUBLIC_", "GATSBY_"]
+
+    /// Whether a vault value is worth looking for in files. Public client values, plain URLs, paths,
+    /// email addresses and short low-entropy identifiers (bucket names, regions) are configuration,
+    /// and finding them in code is not a leak.
+    public static func isSecretLike(name: String, value: String) -> Bool {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count >= Redactor.minimumSecretLength else { return false }
+        let upper = name.uppercased()
+        if publicPrefixes.contains(where: { upper.hasPrefix($0) }) { return false }
+        if value.hasPrefix("/") || value.hasPrefix("./") || value.hasPrefix("~/") { return false }
+        if value.range(of: #"^[^@\s:/]+@[^@\s:/]+\.[a-z]{2,}$"#, options: [.regularExpression, .caseInsensitive]) != nil { return false }
+        if let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+           ["http", "https", "ws", "wss"].contains(scheme), url.host != nil,
+           url.user == nil, url.password == nil, url.query == nil, url.fragment == nil {
+            return false
+        }
+        if value.range(of: #"^[a-z._-]+$"#, options: .regularExpression) != nil { return false }   // words: bucket, region names
+        if value.count < 24, value.range(of: #"^[a-z0-9._-]+$"#, options: .regularExpression) != nil, entropy(value) < 3.5 {
+            return false
+        }
+        return true
+    }
+
+    /// Shannon entropy in bits per character.
+    static func entropy(_ text: String) -> Double {
+        let counts = Dictionary(grouping: text, by: { $0 }).mapValues(\.count)
+        let total = Double(text.count)
+        return counts.values.reduce(0) { sum, c in let p = Double(c) / total; return sum - p * log2(p) }
+    }
 
     static let skippedDirectories: Set<String> = ProjectScanner.skippedDirectories.union([".git", ".hg", ".svn"])
     static let skippedExtensions: Set<String> = [
@@ -175,6 +255,11 @@ public struct SecretScanner {
         // Binary check: NUL byte in the first 8 KB.
         if data.prefix(8192).contains(0) { return [] }
         let text = String(decoding: data, as: UTF8.self)
-        return scan(text: text, source: path)
+        let findings = scan(text: text, source: path)
+        // Firebase client config: its Google API key ships inside the app by design (restricted by app ID).
+        if Self.firebaseClientConfigs.contains((path as NSString).lastPathComponent) {
+            return findings.filter { $0.name != "Google API key" }
+        }
+        return findings
     }
 }

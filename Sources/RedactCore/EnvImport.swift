@@ -105,7 +105,15 @@ public enum ProjectScanner {
     static let skippedDirectories: Set<String> = [
         "node_modules", ".git", ".build", "build", "dist", ".next", ".wrangler", ".vercel",
         ".turbo", ".cache", "vendor", "Pods", "DerivedData", ".venv", "venv", "__pycache__", "coverage",
+        ".claude", ".worktrees",   // agent worktrees: copies of the project, often with stale values
+        ".open-next", ".output", ".svelte-kit", ".nuxt", ".expo", ".parcel-cache", ".docusaurus",   // build output
     ]
+
+    /// A folder with its own `.git` (a nested repo, or a git worktree whose `.git` is a file) is a
+    /// different checkout, not part of this project.
+    static func isSeparateCheckout(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path)
+    }
 
     /// `excluding`: absolute paths of nested folders that are projects of their own; skipped.
     public static func scan(root: String, maxDepth: Int = 5, excluding: Set<String> = []) -> [Found] {
@@ -120,7 +128,9 @@ public enum ProjectScanner {
                 let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if values?.isSymbolicLink == true { continue }
                 if values?.isDirectory == true {
-                    if !skippedDirectories.contains(name), !excluding.contains(child.path) { visit(child, depth: depth + 1) }
+                    if !skippedDirectories.contains(name), !excluding.contains(child.path), !isSeparateCheckout(child) {
+                        visit(child, depth: depth + 1)
+                    }
                     continue
                 }
                 guard let classified = classify(fileName: name) else { continue }
@@ -136,10 +146,16 @@ public enum ProjectScanner {
     /// Maps a file name to an environment. Returns nil for files that are not env files.
     public static func classify(fileName name: String) -> (environment: String?, isExample: Bool)? {
         let lower = name.lowercased()
-        if lower == ".dev.vars" { return ("development", false) }
-        if lower.hasPrefix(".dev.vars.") { return (environment(forSuffix: String(lower.dropFirst(10))), false) }
-        guard lower == ".env" || lower.hasPrefix(".env.") else { return nil }
-        let suffix = lower == ".env" ? "" : String(lower.dropFirst(5))
+        let suffix: String
+        if lower == ".env" || lower == ".dev.vars" {
+            suffix = ""
+        } else if lower.hasPrefix(".env.") {
+            suffix = String(lower.dropFirst(5))
+        } else if lower.hasPrefix(".dev.vars.") {
+            suffix = String(lower.dropFirst(10))
+        } else {
+            return nil
+        }
         if ["example", "sample", "template", "defaults", "dist"].contains(where: { suffix.contains($0) }) {
             return (nil, true)
         }

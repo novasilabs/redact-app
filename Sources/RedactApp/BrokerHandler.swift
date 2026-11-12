@@ -121,9 +121,11 @@ final class BrokerHandler {
         for item in data.items {
             switch item.kind {
             case .apiKey, .note:
+                guard SecretScanner.isSecretLike(name: item.name, value: item.value) else { continue }
                 secrets[item.name] = item.value
             case .variable:
                 guard item.linkedItemID == nil else { continue } // the shared key is scanned under its own name
+                guard SecretScanner.isSecretLike(name: item.name, value: item.value) else { continue }
                 let project = data.projects.first { $0.id == item.projectID }?.name ?? "?"
                 secrets["\(item.name) (\(project) · \(item.environment ?? ""))"] = item.value
             case .backupCodes:

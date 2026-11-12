@@ -43,6 +43,9 @@ import Testing
     #expect(ProjectScanner.classify(fileName: ".dev.vars")?.environment == "development")
     #expect(ProjectScanner.classify(fileName: ".env.example")?.isExample == true)
     #expect(ProjectScanner.classify(fileName: "env.ts") == nil)
+    #expect(ProjectScanner.classify(fileName: ".dev.vars.example")?.isExample == true)
+    #expect(ProjectScanner.classify(fileName: ".dev.vars.example")?.environment == nil)
+    #expect(ProjectScanner.classify(fileName: ".dev.vars.production")?.environment == "production")
 }
 
 @Test func buildsImportPlanWithDiffLinksAndGaps() throws {
@@ -86,4 +89,42 @@ import Testing
     #expect(env["DEBUG"] == "0")
     #expect(env["API_SECRET"] == "apisecret999")
     #expect(vault.items.first { $0.name == "OPENAI_API_KEY" && $0.kind == .variable }?.linkedItemID == shared.id)
+}
+
+@Test func scanSkipsAgentWorktreesAndNestedCheckouts() throws {
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("redact-scan-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    for dir in ["apps/web", ".claude/worktrees/planner", "vendored-repo"] {
+        try fm.createDirectory(at: root.appendingPathComponent(dir), withIntermediateDirectories: true)
+    }
+    try "A=1".write(to: root.appendingPathComponent(".dev.vars"), atomically: true, encoding: .utf8)
+    try "B=2".write(to: root.appendingPathComponent("apps/web/.env.local"), atomically: true, encoding: .utf8)
+    try "A=stale".write(to: root.appendingPathComponent(".claude/worktrees/planner/.dev.vars"), atomically: true, encoding: .utf8)
+    try "gitdir: /elsewhere".write(to: root.appendingPathComponent("vendored-repo/.git"), atomically: true, encoding: .utf8)
+    try "C=3".write(to: root.appendingPathComponent("vendored-repo/.env"), atomically: true, encoding: .utf8)
+
+    let found = ProjectScanner.scan(root: root.path).map(\.relativePath).sorted()
+    #expect(found == [".dev.vars", "apps/web/.env.local"])
+}
+
+@Test func onlySecretLikeVaultValuesAreScannedFor() {
+    // Configuration, not secrets: finding these in code is expected.
+    #expect(!SecretScanner.isSecretLike(name: "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", value: "sb_publishable_9f8e7d6c5b4a3f2e1d0c"))
+    #expect(!SecretScanner.isSecretLike(name: "VITE_SITE_URL", value: "https://example.com"))
+    #expect(!SecretScanner.isSecretLike(name: "SUPABASE_URL", value: "https://abcdefghijklmnop.supabase.co"))
+    #expect(!SecretScanner.isSecretLike(name: "DOCUMENTS_BUCKET", value: "documents"))
+    #expect(!SecretScanner.isSecretLike(name: "SERVICE_ACCOUNT_PATH", value: "./service-account.json"))
+    #expect(!SecretScanner.isSecretLike(name: "EMAIL_FROM", value: "hello@example.com"))
+    #expect(!SecretScanner.isSecretLike(name: "API_KEY", value: "abc"))
+    // Secrets.
+    #expect(SecretScanner.isSecretLike(name: "SUPABASE_SECRET_KEY", value: "sb_secret_Q2x7Vb9Lm4Kp8Rt1"))
+    #expect(SecretScanner.isSecretLike(name: "DATABASE_URL", value: "postgres://app:s3cretPw@db.example.com:5432/app"))
+    #expect(SecretScanner.isSecretLike(name: "WEBHOOK", value: "https://hooks.example.com/x?token=abc123def456"))
+    #expect(SecretScanner.isSecretLike(name: "CRON_SECRET", value: "k7f2m9q4x1z8w3v6"))
+}
+
+@Test func scannerSkipsBuildOutput() {
+    #expect(SecretScanner.skippedDirectories.contains(".open-next"))
+    #expect(ProjectScanner.skippedDirectories.contains(".svelte-kit"))
 }

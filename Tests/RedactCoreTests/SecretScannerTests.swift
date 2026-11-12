@@ -9,6 +9,7 @@ import Testing
     aws_access_key_id = AKIAABCDEFGHIJKLMNOP
     DATABASE_URL=postgres://app:hunter22@db.example.com:5432/app
     -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
     nothing to see here: sk_test_123 is a test key and postgres://localhost/app has no password
     """
     let findings = scanner.scan(text: text, source: "app.ts")
@@ -97,4 +98,35 @@ import Testing
 
 @Test func nestedPathsAreScannedOnce() {
     #expect(HealthScan.outermost(["/a/b", "/a", "/a/b/c", "/x", "/ab"]) == ["/a", "/ab", "/x"])
+}
+
+@Test func databaseURLsToLocalHostsOrWithPlaceholdersAreNotLeaks() {
+    let scanner = SecretScanner(secrets: [:])
+    func hits(_ line: String) -> Int { scanner.scan(text: line, source: "x").count }
+    #expect(hits("DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres") == 0)
+    #expect(hits("url: postgresql://app:Sup3rS3cret@localhost:5432/app") == 0)
+    #expect(hits("postgresql://postgres:[YOUR-PASSWORD]@db.abc.supabase.co:5432/postgres") == 0)
+    #expect(hits("postgres://app:${DB_PASSWORD}@db.example.com/app") == 0)
+    #expect(hits("postgres://app:Sup3rS3cret@db.example.com:5432/app") == 1)
+}
+
+@Test func privateKeyHeadersNeedKeyMaterial() {
+    let scanner = SecretScanner(secrets: [:])
+    let body = String(repeating: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", count: 3)
+    #expect(scanner.scan(text: #".replace(/-----BEGIN PRIVATE KEY-----/g, "")"#, source: "x").isEmpty)
+    #expect(scanner.scan(text: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----", source: "x").isEmpty)
+    #expect(scanner.scan(text: "-----BEGIN PRIVATE KEY-----\n\(body)\n-----END PRIVATE KEY-----", source: "x").count == 1)
+    #expect(scanner.scan(text: #"{"private_key": "-----BEGIN PRIVATE KEY-----\n"# + body + #"\n-----END PRIVATE KEY-----\n"}"#, source: "x").count == 1)
+}
+
+@Test func firebaseClientConfigKeysAreNotLeaks() throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("redact-fb-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let line = #"{ "current_key": "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q" }"#
+    try line.write(to: dir.appendingPathComponent("google-services.json"), atomically: true, encoding: .utf8)
+    try line.write(to: dir.appendingPathComponent("config.ts"), atomically: true, encoding: .utf8)
+    let scanner = SecretScanner(secrets: [:])
+    #expect(scanner.scanFile(dir.appendingPathComponent("google-services.json").path).isEmpty)
+    #expect(scanner.scanFile(dir.appendingPathComponent("config.ts").path).count == 1)
 }
