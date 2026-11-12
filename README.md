@@ -127,6 +127,17 @@ redact id which                                        # what applies here
 
 Credentials go to `redact run` and the shell wrappers. `redact push --to github` authenticates `gh` with the folder's GitHub account and never uploads that token as a secret; each host's CLI only ever sees its own provider's credentials. Agents need your approval to add or rebind accounts.
 
+## Backup and moving to a new Mac
+
+**Backup & restore** (⌘7) exports a `.redact` file: everything, or only the projects, keys, code sets and
+accounts you pick. It's encrypted, and the Recovery Key you saved at setup opens it; the Touch ID key
+stays on this Mac. Wrangler logins, `~/.aws` and shell hooks live outside the vault and aren't included.
+
+On a new Mac, choose **Restore from backup** on the first screen (or double-click the file), enter the
+Recovery Key, and set up Touch ID. Folders saved under another user name (`/Users/old/...`) are moved to
+your home folder. A checklist then covers what lives outside the vault. Restoring into an existing vault
+shows what's new or changed and restores only what you check.
+
 ## Layout
 
 ```

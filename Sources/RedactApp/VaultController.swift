@@ -118,6 +118,29 @@ final class VaultController: ObservableObject {
         identityIndex = data.identities
     }
 
+    // MARK: - Backup and restore
+
+    /// Builds a backup of the unlocked vault. The Recovery Key opens it.
+    func makeBackup(_ selection: BackupSelection) throws -> VaultFile {
+        guard state == .unlocked, let file, let key else { throw VaultError.locked }
+        return try VaultBackup.make(from: file, data: data, key: key, selection: selection)
+    }
+
+    /// Opens a backup file with a Recovery Key typed by the user. Doesn't change this vault.
+    static func openBackup(_ backup: VaultFile, recoveryKey text: String) throws -> (data: VaultData, key: SymmetricKey) {
+        guard let secret = RecoveryKey.parse(text) else { throw VaultError.wrongRecoveryKey }
+        return try VaultBackup.open(backup, recoveryKey: secret)
+    }
+
+    /// First run on a new Mac: the backup becomes this Mac's vault, with a new Touch ID key.
+    func adoptBackup(_ backup: VaultFile, data restored: VaultData, key vaultKey: SymmetricKey) throws {
+        guard state == .noVault else { throw VaultError.locked }
+        let enclave = try VaultFile.enclaveProtector(for: vaultKey, requireBiometry: Self.biometryAvailable)
+        let newFile = try VaultBackup.adopt(backup, data: restored, key: vaultKey, enclave: enclave)
+        try newFile.write(to: RedactPaths.vault)
+        try finishUnlock(file: newFile, key: vaultKey, context: nil)
+    }
+
     private func reenrollEnclave() throws {
         guard let key, var current = file else { return }
         current.protectors.removeAll { $0.kind == .enclave }

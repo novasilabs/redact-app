@@ -2,7 +2,7 @@ import RedactCore
 import SwiftUI
 
 enum Section: String, CaseIterable, Identifiable {
-    case projects = "Projects", keys = "Keys", codes = "Codes", identities = "Identities", health = "Health", activity = "Activity"
+    case projects = "Projects", keys = "Keys", codes = "Codes", identities = "Identities", health = "Health", activity = "Activity", backup = "Backup"
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .identities: "Accounts"
         case .health: "Leak check"
         case .activity: "Activity"
+        case .backup: "Backup & restore"
         }
     }
     var icon: String {
@@ -22,6 +23,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .identities: "person.2"
         case .health: "checkmark.shield"
         case .activity: "clock.arrow.circlepath"
+        case .backup: "externaldrive"
         }
     }
     var shortcut: KeyEquivalent {
@@ -32,6 +34,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .identities: "4"
         case .health: "5"
         case .activity: "6"
+        case .backup: "7"
         }
     }
 }
@@ -61,6 +64,8 @@ struct RootView: View {
 
 struct SetupView: View {
     @EnvironmentObject var vault: VaultController
+    @EnvironmentObject var status: AppStatus
+    @State private var restoreURL: URL?
     @State private var recoveryKey: String?
     @State private var confirmedSaved = false
     @State private var error: String?
@@ -107,12 +112,26 @@ struct SetupView: View {
                 } label: { Label("Create vault", systemImage: "touchid") }
                     .buttonStyle(.primaryLarge)
                     .keyboardShortcut(.defaultAction)
+                Button { restoreURL = chooseBackup() } label: { Label("Restore from backup…", systemImage: "square.and.arrow.down") }
+                    .buttonStyle(.secondary)
+                    .help("Moving from another Mac? Open the .redact backup you exported there.")
                 if let error { Notice(symbol: "exclamationmark.triangle.fill", text: error, tone: .danger).frame(maxWidth: 420) }
             }
         }
         .padding(Space.xxxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .canvas()
+        .sheet(item: Binding(get: { restoreURL.map { ImportTarget(path: $0.path) } }, set: { restoreURL = $0.map { URL(fileURLWithPath: $0.path) } })) { target in
+            RestoreSheet(url: URL(fileURLWithPath: target.path), mode: .newVault)
+        }
+        .onAppear { takePending() }
+        .onChange(of: status.pendingBackup) { takePending() }
+    }
+
+    private func takePending() {
+        guard let url = status.pendingBackup else { return }
+        status.pendingBackup = nil
+        restoreURL = url
     }
 
     private func printRecoveryKey(_ key: String) {
@@ -175,6 +194,8 @@ struct LockedView: View {
 
 struct MainView: View {
     @EnvironmentObject var vault: VaultController
+    @EnvironmentObject var status: AppStatus
+    @State private var restoreURL: URL?
     @State private var destination: Destination? = .section(.projects)
     @State private var showPaste = false
     @State private var importRoot: String?
@@ -197,6 +218,11 @@ struct MainView: View {
         }
         .toolbar(.hidden, for: .windowToolbar)
         .sheet(isPresented: $showPaste) { pasteSheet }
+        .sheet(item: Binding(get: { restoreURL.map { ImportTarget(path: $0.path) } }, set: { restoreURL = $0.map { URL(fileURLWithPath: $0.path) } })) { target in
+            RestoreSheet(url: URL(fileURLWithPath: target.path), mode: .merge)
+        }
+        .onAppear { takePendingBackup() }
+        .onChange(of: status.pendingBackup) { takePendingBackup() }
         .sheet(item: Binding(get: { importRoot.map(ImportTarget.init) }, set: { importRoot = $0?.path })) { target in
             ImportSheet(root: target.path) { projectID in destination = .project(projectID) }
         }
@@ -219,6 +245,13 @@ struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .redactDevImport)) { note in importRoot = note.object as? String }
         .onReceive(NotificationCenter.default.publisher(for: .redactDevPaste)) { _ in showPaste.toggle() }
+        .onReceive(NotificationCenter.default.publisher(for: .redactDevRestore)) { note in restoreURL = note.object as? URL }
+    }
+
+    private func takePendingBackup() {
+        guard let url = status.pendingBackup else { return }
+        status.pendingBackup = nil
+        restoreURL = url
     }
 
     /// ⌘N adds to what's on screen: a variable in the open project, codes on the codes page, a key elsewhere.
@@ -265,7 +298,7 @@ struct MainView: View {
             }
 
             SwiftUI.Section("Safety") {
-                ForEach([Section.health, .activity]) { section in
+                ForEach([Section.health, .activity, .backup]) { section in
                     Label(section.title, systemImage: section.icon).tag(Destination.section(section))
                 }
             }
@@ -324,6 +357,7 @@ struct MainView: View {
         case .section(.identities): IdentitiesView()
         case .section(.health): HealthView()
         case .section(.activity): ActivityView()
+        case .section(.backup): BackupView()
         }
     }
 

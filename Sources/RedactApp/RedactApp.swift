@@ -73,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vault.lock()
     }
 
+    /// Double-clicked `.redact` backups open the restore sheet.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { $0.pathExtension == "redact" }) else { return }
+        status.pendingBackup = url
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
@@ -80,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class AppStatus: ObservableObject {
     @Published var socketReady = false
+    /// A backup file the user opened from Finder, waiting for the restore sheet.
+    @Published var pendingBackup: URL?
     let llmProxy: LLMProxy
 
     init(llmProxy: LLMProxy) { self.llmProxy = llmProxy }

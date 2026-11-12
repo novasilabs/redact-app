@@ -38,6 +38,8 @@ public struct VaultFile: Codable, Sendable {
     public var format: Int
     public var protectors: [Protector]
     public var records: [Record]
+    /// Set on backup files only (see Backup.swift). Plaintext and informational.
+    public var backup: BackupInfo?
 
     public init(format: Int, protectors: [Protector], records: [Record]) {
         self.format = format

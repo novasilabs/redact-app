@@ -67,6 +67,16 @@ enum DevSnapshot {
             approvals.dismissForSnapshot()
             _ = await approvalTask.value
 
+            if let backup = try? vault.makeBackup(.all(vault.data)) {
+                let url = directory.appendingPathComponent("snapshot-backup.redact")
+                try? backup.write(to: url)
+                NotificationCenter.default.post(name: .redactDevRestore, object: url)
+                try? await Task.sleep(for: .seconds(1))
+                capture("08-restore-sheet", to: directory)
+                NotificationCenter.default.post(name: .redactDevRestore, object: nil)
+                try? await Task.sleep(for: .seconds(0.5))
+            }
+
             NotificationCenter.default.post(name: .redactQuickFind, object: nil)
             try? await Task.sleep(for: .seconds(1))
             capture("07-quick-find", to: directory)
@@ -95,4 +105,5 @@ extension Notification.Name {
     static let redactDevSelectFirst = Notification.Name("redactDevSelectFirst")
     static let redactDevImport = Notification.Name("redactDevImport")
     static let redactDevPaste = Notification.Name("redactDevPaste")
+    static let redactDevRestore = Notification.Name("redactDevRestore")
 }
