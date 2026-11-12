@@ -8,7 +8,10 @@ struct ImportTarget: Identifiable {
 }
 
 func abbreviate(_ path: String) -> String {
-    (path as NSString).abbreviatingWithTildeInPath
+    if let alias = DevSnapshot.pathAlias, path.hasPrefix(alias.from) {
+        return alias.to + path.dropFirst(alias.from.count)
+    }
+    return (path as NSString).abbreviatingWithTildeInPath
 }
 
 // MARK: - All projects
@@ -131,6 +134,7 @@ struct ProjectDetailView: View {
     let rescan: () -> Void
     @State private var environment = "development"
     @State private var adding = false
+    @State private var tableWidth: CGFloat = 1000
     @State private var newName = ""
     @State private var newValue = ""
     @State private var copiedCommand = false
@@ -209,7 +213,8 @@ struct ProjectDetailView: View {
             }
             ForEach(Array(variables.enumerated()), id: \.element.id) { index, item in
                 if index > 0 { Rule(inset: Space.m) }
-                VariableRow(item: item, value: vault.data.resolvedValue(of: item), linkedName: linkedName(item)) {
+                VariableRow(item: item, value: vault.data.resolvedValue(of: item), linkedName: linkedName(item),
+                            density: RowDensity.fitting(tableWidth, hasLinks: variables.contains { linkedName($0) != nil })) {
                     menu(for: item)
                 }
             }
@@ -220,6 +225,12 @@ struct ProjectDetailView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity)
+        .background(GeometryReader { geometry in
+            Color.clear
+                .onAppear { tableWidth = geometry.size.width }
+                .onChange(of: geometry.size.width) { _, width in tableWidth = width }
+        })
         .card()
     }
 
@@ -375,14 +386,48 @@ struct AccountChip: View {
     }
 }
 
+/// How much a variable row shows. Chosen once per table from its width, so columns line up and a
+/// narrow window drops the timestamp (then shrinks names) instead of growing wider than the screen.
+struct RowDensity: Equatable {
+    var nameWidth: CGFloat
+    var showsTime: Bool
+    var pillText: Bool
+
+    static let full = RowDensity(nameWidth: 220, showsTime: true, pillText: true)
+    static let medium = RowDensity(nameWidth: 160, showsTime: false, pillText: true)
+    static let compact = RowDensity(nameWidth: 140, showsTime: false, pillText: false)
+
+    /// Width a row needs: name, value (min 200), reveal/copy, link pill, time, menu, gaps, padding.
+    func required(hasLinks: Bool) -> CGFloat {
+        let pill: CGFloat = hasLinks ? (pillText ? 190 : 22) + Space.m : 0
+        let time: CGFloat = showsTime ? 76 + Space.m : 0
+        return nameWidth + Space.m + 200 + 80 + pill + time + Space.m + 24 + 2 * Space.m
+    }
+
+    static func fitting(_ width: CGFloat, hasLinks: Bool) -> RowDensity {
+        [full, medium].first { width >= $0.required(hasLinks: hasLinks) } ?? compact
+    }
+}
+
 private struct VariableRow<MenuItems: View>: View {
     let item: Item
     let value: String
     let linkedName: String?
+    var density: RowDensity = .full
     @ViewBuilder let menu: () -> MenuItems
     @State private var hovering = false
 
     var body: some View {
+        row(nameWidth: density.nameWidth, showsTime: density.showsTime, pillText: density.pillText)
+        .padding(.horizontal, Space.m)
+        .frame(minHeight: 44)
+        .background(hovering ? Palette.hover : .clear)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu { menu() }
+    }
+
+    private func row(nameWidth: CGFloat, showsTime: Bool, pillText: Bool) -> some View {
         HStack(spacing: Space.m) {
             Text(item.name)
                 .font(TextStyle.monoStrong)
@@ -390,21 +435,32 @@ private struct VariableRow<MenuItems: View>: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(width: 220, alignment: .leading)
+                .frame(width: nameWidth, alignment: .leading)
                 .help(item.name)
             SecretValue(value: value)
                 .layoutPriority(1)
             if let linkedName {
-                Pill(text: linkedName, symbol: "link", tone: .accent)
-                    .help("Linked to the shared key \"\(linkedName)\". Rotate it once in Keys and every project gets the new value.")
-                    .fixedSize()
+                Group {
+                    if pillText {
+                        Pill(text: linkedName, symbol: "link", tone: .accent)
+                    } else {
+                        Image(systemName: "link").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.accentText)
+                            .frame(width: 22, height: 22)
+                            .background(Palette.accentSoft, in: RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+                            .accessibilityLabel("Linked to \(linkedName)")
+                    }
+                }
+                .help("Linked to the shared key \"\(linkedName)\". Rotate it once in Keys and every project gets the new value.")
+                .fixedSize()
             }
-            Text(Ago.text(item.updatedAt))
-                .font(TextStyle.caption)
-                .foregroundStyle(Palette.ink2)
-                .monospacedDigit()
-                .frame(width: 76, alignment: .trailing)
-                .help("Updated \(item.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+            if showsTime {
+                Text(Ago.text(item.updatedAt))
+                    .font(TextStyle.caption)
+                    .foregroundStyle(Palette.ink2)
+                    .monospacedDigit()
+                    .frame(width: 76, alignment: .trailing)
+                    .help("Updated \(item.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+            }
             Menu { menu() } label: {
                 Image(systemName: "ellipsis").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.ink2)
                     .frame(width: 24, height: 24)
@@ -414,12 +470,6 @@ private struct VariableRow<MenuItems: View>: View {
             .fixedSize()
             .help("More")
         }
-        .padding(.horizontal, Space.m)
-        .frame(minHeight: 44)
-        .background(hovering ? Palette.hover : .clear)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .contextMenu { menu() }
     }
 }
 

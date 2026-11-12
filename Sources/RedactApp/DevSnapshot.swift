@@ -14,6 +14,14 @@ enum DevSnapshot {
         return URL(fileURLWithPath: dir, isDirectory: true)
     }
 
+    /// `REDACT_SNAPSHOT_PATH_ALIAS=/real/prefix=~/code`: shows demo folders under a friendlier path.
+    nonisolated static let pathAlias: (from: String, to: String)? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["REDACT_SNAPSHOT_DIR"] != nil, let raw = env["REDACT_SNAPSHOT_PATH_ALIAS"],
+              let eq = raw.firstIndex(of: "=") else { return nil }
+        return (String(raw[..<eq]), String(raw[raw.index(after: eq)...]))
+    }()
+
     static func run(vault: VaultController, approvals: ApprovalCenter) {
         guard let directory else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -23,7 +31,14 @@ enum DevSnapshot {
         default: break
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(1))
+            // REDACT_SNAPSHOT_SIZE=1200x760 (points) resizes the main window before capturing.
+            if let size = ProcessInfo.processInfo.environment["REDACT_SNAPSHOT_SIZE"]?.split(separator: "x").compactMap({ Double($0) }),
+               size.count == 2, let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+                window.setContentSize(NSSize(width: size[0], height: size[1]))
+                window.center()
+            }
+            try? await Task.sleep(for: .seconds(0.5))
             capture("01-locked", to: directory)
             _ = await vault.unlock()
             try? await Task.sleep(for: .seconds(1))
