@@ -52,6 +52,11 @@ enum Palette {
 
     /// Lime signal. Fill only, always with `accentInk` on top.
     static let accent = adaptive(light: oklch(0.88, 0.19, hue), dark: oklch(0.87, 0.19, hue))
+    /// The asterisk on the lime mark (near-black in both appearances).
+    static let markInk = Color(nsColor: oklch(0.13, 0.02, hue))
+    static let markInkTop = Color(nsColor: oklch(0.34, 0.03, hue))
+    static let markLimeTop = Color(nsColor: oklch(0.93, 0.17, 125))
+    static let markLimeBottom = Color(nsColor: oklch(0.80, 0.19, 132))
     static let accentInk = adaptive(light: oklch(0.27, 0.07, hue), dark: oklch(0.24, 0.06, hue))
     /// The accent as text or an icon on canvas/surface (contrast-safe in both appearances).
     static let accentText = adaptive(light: oklch(0.5, 0.14, 135), dark: oklch(0.86, 0.17, hue))
@@ -402,24 +407,44 @@ struct BrandTile: View {
 
 // MARK: - Signature: the redaction bar
 
-/// Redact's mark: three lines of text, the middle one blacked out in the accent.
+/// Redact's mark: a raised near-black asterisk with an open centre on the lit lime tile. Same geometry as
+/// the app icon (scripts/make-icon.swift).
 struct RedactMark: View {
     var size: CGFloat = 56
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-            .fill(Palette.surface)
-            .overlay(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous).strokeBorder(Palette.rule, lineWidth: 1))
-            .overlay(alignment: .leading) {
-                VStack(alignment: .leading, spacing: size * 0.1) {
-                    Capsule().fill(Palette.ink3).frame(width: size * 0.46, height: size * 0.08)
-                    Capsule().fill(Palette.accent).frame(width: size * 0.62, height: size * 0.16)
-                    Capsule().fill(Palette.ink3).frame(width: size * 0.34, height: size * 0.08)
-                }
-                .padding(.leading, size * 0.19)
+        let small = size <= 24
+        let shape = RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+        shape
+            .fill(LinearGradient(colors: [Palette.markLimeTop, Palette.markLimeBottom], startPoint: .top, endPoint: .bottom))
+            .overlay(shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.5), .black.opacity(0.12)], startPoint: .top, endPoint: .bottom),
+                                        lineWidth: max(1, size / 64)))
+            .overlay {
+                AsteriskShape(inner: small ? 0 : 0.06, width: small ? 0.13 : 0.112)
+                    .fill(LinearGradient(colors: [Palette.markInkTop, Palette.markInk], startPoint: .top, endPoint: .bottom))
+                    .shadow(color: Palette.markInk.opacity(small ? 0 : 0.35), radius: size * 0.03, y: size * 0.025)
             }
+            .shadow(color: .black.opacity(small ? 0 : 0.18), radius: size * 0.04, y: size * 0.015)
             .frame(width: size, height: size)
             .accessibilityHidden(true)
+    }
+}
+
+/// Six separate rounded arms around an open centre. Fractions are of the tile width.
+struct AsteriskShape: Shape {
+    var outer: CGFloat = 0.335
+    var inner: CGFloat = 0.06
+    var width: CGFloat = 0.112
+
+    func path(in rect: CGRect) -> Path {
+        let tile = min(rect.width, rect.height)
+        let (outer, inner, width) = (tile * outer, tile * inner, tile * width)
+        var path = Path()
+        for angle in [90.0, 30.0, -30.0, -90.0, -150.0, 150.0] {
+            let arm = Path(roundedRect: CGRect(x: inner, y: -width / 2, width: outer - inner, height: width), cornerRadius: width / 2)
+            path.addPath(arm, transform: CGAffineTransform(translationX: rect.midX, y: rect.midY).rotated(by: angle * .pi / 180))
+        }
+        return path
     }
 }
 

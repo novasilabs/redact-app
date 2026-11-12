@@ -15,6 +15,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
 cp "$BIN/RedactApp" "$APP/Contents/MacOS/Redact"
 cp "$BIN/redact" "$APP/Contents/Resources/bin/redact"
+# Icon: regenerate with `swift scripts/make-icon.swift`.
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 VERSION="0.1.0"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -26,6 +28,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Redact</string>
   <key>CFBundleDisplayName</key><string>Redact</string>
   <key>CFBundleExecutable</key><string>Redact</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
