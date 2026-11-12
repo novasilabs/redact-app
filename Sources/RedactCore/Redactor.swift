@@ -102,6 +102,34 @@ public final class Redactor {
         drain(final: true)
     }
 
+    /// Whether bytes are being held back (call `flushIdle()` when the stream goes quiet).
+    public var isHolding: Bool { !pending.isEmpty }
+
+    /// For a stream that has gone quiet: emits everything except a tail that could still be the start
+    /// of a secret. Without this, a dev server's last lines (its URL banner) stay held back until it
+    /// prints again. Never emits part of a secret: the kept tail covers every possible partial match.
+    public func flushIdle() -> [UInt8] {
+        let count = pending.count
+        guard count > 0, maxLength > 0 else { return finish() }
+        var hold = count
+        for start in max(0, count - (maxLength - 1))..<count where isPartialMatch(from: start) {
+            hold = start
+            break
+        }
+        if hold == count { return drain(final: true) }
+        let tail = Array(pending[hold...])
+        pending.removeSubrange(hold...)
+        let output = drain(final: true)
+        pending = tail
+        return output
+    }
+
+    /// Whether `pending[start...]` is a proper prefix of some pattern.
+    private func isPartialMatch(from start: Int) -> Bool {
+        let rest = pending[start...]
+        return patterns.contains { $0.bytes.count > rest.count && $0.bytes.starts(with: rest) }
+    }
+
     private func drain(final: Bool) -> [UInt8] {
         guard maxLength > 0 else {
             defer { pending.removeAll(keepingCapacity: true) }

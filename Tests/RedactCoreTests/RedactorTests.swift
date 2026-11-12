@@ -76,3 +76,20 @@ private func run(_ secrets: [String: String], _ input: String, chunkSizes: [Int]
         for value in values { #expect(!oneShot.contains(value)) }
     }
 }
+
+@Test func idleFlushEmitsQuietOutputButNeverPartOfASecret() {
+    let redactor = Redactor(secrets: ["TOKEN": "supersecret-123456"])
+    func text(_ bytes: [UInt8]) -> String { String(decoding: bytes, as: UTF8.self) }
+
+    // A dev server prints its banner and goes quiet: all of it comes out on the idle flush.
+    var out = text(redactor.feed(Array("Local: http://localhost:5173/\n".utf8)))
+    out += text(redactor.flushIdle())
+    #expect(out == "Local: http://localhost:5173/\n")
+    #expect(!redactor.isHolding)
+
+    // Output that stops halfway through a secret: the possible start of it is kept back.
+    out = text(redactor.feed(Array("token=supers".utf8))) + text(redactor.flushIdle())
+    #expect(out == "token=")
+    out += text(redactor.feed(Array("ecret-123456 ok".utf8))) + text(redactor.finish())
+    #expect(out == "token=[redact:TOKEN] ok")
+}

@@ -54,10 +54,21 @@ enum CommandRunner {
         let reader = pipe.fileHandleForReading
         DispatchQueue.global().async {
             let redactor = Redactor(secrets: secrets)
+            let fd = reader.fileDescriptor
+            var buffer = [UInt8](repeating: 0, count: 65536)
             while true {
-                let data = reader.availableData
-                if data.isEmpty { break }
-                handle.write(Data(redactor.feed(data)))
+                // Wait for output; if the command goes quiet with bytes held back, flush what is safe.
+                var poller = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&poller, 1, redactor.isHolding ? 100 : -1)
+                if ready == 0 {
+                    handle.write(Data(redactor.flushIdle()))
+                    continue
+                }
+                if ready < 0 { if errno == EINTR { continue } else { break } }
+                let n = read(fd, &buffer, buffer.count)
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { break }
+                handle.write(Data(redactor.feed(buffer[0..<n])))
             }
             handle.write(Data(redactor.finish()))
             group.leave()
