@@ -25,12 +25,14 @@ struct KeysView: View {
                         Text("\(left) of \(item.codes.count) left").font(.caption).foregroundStyle(left <= 2 ? .orange : .secondary)
                     } else {
                         let uses = vault.data.usages(of: item).count
+                            + vault.data.identities.filter { if case let .apiToken(id, _) = $0.mode { return id == item.id } else { return false } }.count
                         Text(uses == 0 ? "not linked" : "linked in \(uses) place\(uses == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .tag(item.id)
             }
             .searchable(text: $search, placement: .sidebar)
+            .onReceive(NotificationCenter.default.publisher(for: .redactDevSelectFirst)) { _ in selection = items.first?.id }
             .frame(minWidth: 220, idealWidth: 260, maxWidth: 340)
 
             Group {
@@ -65,11 +67,16 @@ struct KeyDetail: View {
             if !item.notes.isEmpty { LabeledContent("Notes") { Text(item.notes) } }
 
             let usages = vault.data.usages(of: item)
+            let identities = vault.data.identities.filter { if case let .apiToken(id, _) = $0.mode { return id == item.id } else { return false } }
             LabeledContent("Used in") {
-                if usages.isEmpty {
+                if usages.isEmpty && identities.isEmpty {
                     Text("Nowhere yet").foregroundStyle(.secondary)
                 } else {
                     VStack(alignment: .leading) {
+                        ForEach(identities) { identity in
+                            Label("Cloudflare identity \(identity.name) (\(identity.boundPaths.count) folder\(identity.boundPaths.count == 1 ? "" : "s"))", systemImage: "person.badge.key")
+                                .font(.callout)
+                        }
                         ForEach(usages) { usage in
                             let project = vault.data.projects.first { $0.id == usage.projectID }?.name ?? "?"
                             Text("\(project) · \(usage.environment ?? "") · \(usage.name)").font(.callout.monospaced())
@@ -120,6 +127,7 @@ struct KeyDetail: View {
 struct CodesDetail: View {
     @EnvironmentObject var vault: VaultController
     let item: Item
+    @State private var revealed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -129,7 +137,11 @@ struct CodesDetail: View {
                 Label("Only \(left) code\(left == 1 ? "" : "s") left. Generate new ones on the site.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
-            Text("Copying a code marks it used.").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("Copying a code marks it used.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Toggle("Show codes", isOn: $revealed).toggleStyle(.switch).controlSize(.small)
+            }
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
                     ForEach(Array(item.codes.enumerated()), id: \.offset) { index, code in
@@ -140,7 +152,7 @@ struct CodesDetail: View {
                                 data.items[i].codes[index].usedAt = Date()
                             }
                         } label: {
-                            Text(code.code)
+                            Text(revealed || code.usedAt != nil ? code.code : String(repeating: "•", count: min(code.code.count, 12)))
                                 .font(.system(.body, design: .monospaced))
                                 .strikethrough(code.usedAt != nil)
                                 .foregroundStyle(code.usedAt != nil ? .secondary : .primary)
@@ -156,6 +168,7 @@ struct CodesDetail: View {
             Button("Delete set", role: .destructive) { vault.update { $0.items.removeAll { $0.id == item.id } } }
         }
         .padding(20)
+        .onChange(of: item.id) { revealed = false }
     }
 }
 
@@ -174,10 +187,12 @@ struct PasteSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add a secret").font(.title2.bold())
-            SecureField("Paste a key, a NAME=value line, or backup codes", text: $value)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: value) { detect() }
-            if kind == .backupCodes {
+            if kind != .backupCodes {
+                SecureField("Paste a key, a NAME=value line, or backup codes", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: value) { detect() }
+            } else {
+                Text("One code per line").font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $value).font(.system(.body, design: .monospaced)).frame(height: 120)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
             }

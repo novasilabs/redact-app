@@ -122,7 +122,7 @@ struct IdentitiesView: View {
             ForEach(paths, id: \.self) { path in
                 HStack {
                     Image(systemName: "folder").foregroundStyle(.secondary)
-                    Text(abbreviate(path)).font(.callout.monospaced())
+                    Text(abbreviate(path)).font(.callout.monospaced()).lineLimit(1).truncationMode(.head).help(path)
                     Spacer()
                     Button("Unbind") {
                         runWrangler("Unbinding…") { await WranglerCLI.deactivate(directory: path) }
@@ -165,7 +165,7 @@ struct IdentitiesView: View {
             ForEach(identity.boundPaths, id: \.self) { path in
                 HStack {
                     Image(systemName: "folder").foregroundStyle(.secondary)
-                    Text(abbreviate(path)).font(.callout.monospaced())
+                    Text(abbreviate(path)).font(.callout.monospaced()).lineLimit(1).truncationMode(.head).help(path)
                     Spacer()
                     Button("Unbind") {
                         vault.update { data in

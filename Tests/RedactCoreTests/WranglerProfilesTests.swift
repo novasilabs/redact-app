@@ -66,3 +66,37 @@ private func fixture() throws -> (root: URL, projects: URL) {
     let resolved = WranglerProfiles.defaultConfigRoot(home: home, environment: ["XDG_CONFIG_HOME": "/somewhere/else"])
     #expect(resolved.standardizedFileURL == root.standardizedFileURL)
 }
+
+@Test func readsTopLevelAccountIDFromToml() {
+    let toml = """
+    name = "api"
+    account_id = "abc123" # acme
+    [env.staging]
+    account_id = "zzz"
+    """
+    #expect(WranglerConfig.accountID(in: toml, toml: true) == "abc123")
+    #expect(WranglerConfig.accountID(in: "name = \"x\"\n[env.prod]\naccount_id = \"zzz\"", toml: true) == nil)
+}
+
+@Test func readsTopLevelAccountIDFromJsonc() {
+    let jsonc = """
+    {
+      // the worker
+      "name": "api",
+      /* "account_id": "commented" */
+      "env": { "staging": { "account_id": "nested" } },
+      "account_id": "def456",
+    }
+    """
+    #expect(WranglerConfig.accountID(in: jsonc, toml: false) == "def456")
+    #expect(WranglerConfig.accountID(in: "{ \"env\": { \"x\": { \"account_id\": \"n\" } } }", toml: false) == nil)
+}
+
+@Test func findsNearestConfigUpwards() throws {
+    let base = URL(fileURLWithPath: WranglerProfiles.realPath(NSTemporaryDirectory())).appendingPathComponent("redact-cfg-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: base.appendingPathComponent("src/deep"), withIntermediateDirectories: true)
+    try "account_id = \"top\"\n".write(to: base.appendingPathComponent("wrangler.toml"), atomically: true, encoding: .utf8)
+    let pin = WranglerConfig.pinnedAccount(from: base.appendingPathComponent("src/deep").path)
+    #expect(pin?.accountID == "top")
+    #expect(pin?.file.hasSuffix("wrangler.toml") == true)
+}

@@ -179,8 +179,11 @@ struct MainView: View {
                 Button("") { section = s }.keyboardShortcut(s.shortcut).hidden()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didUpdateNotification)) { _ in }
         .onContinuousHover { _ in vault.touch() }
+        .onReceive(NotificationCenter.default.publisher(for: .redactDevSelect)) { note in
+            section = (note.object as? String).flatMap(Section.init(rawValue:))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .redactDevPaste)) { _ in showPaste.toggle() }
     }
 }
 
@@ -192,7 +195,7 @@ struct MaskedValue: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(revealed ? value : String(repeating: "•", count: min(max(value.count, 8), 24)))
+            Text(revealed ? value : String(repeating: "•", count: 12))
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)

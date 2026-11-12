@@ -94,7 +94,32 @@ final class BrokerHandler {
         let resolution = activeIdentity(for: request.cwd)
         response.activeIdentity = resolution.name
         response.activeIdentitySource = resolution.source
+        if let pin = WranglerConfig.pinnedAccount(from: request.cwd) {
+            response.pinnedAccount = pin.accountID
+            response.pinnedAccountFile = pin.file
+            if let advice = identityAdvice(cwd: request.cwd, pin: pin) { response.warnings = [advice] }
+        }
         return response
+    }
+
+    /// CF-4: compares the folder's pinned account with the identity that applies there.
+    private func identityAdvice(cwd: String, pin: WranglerConfig.Pin) -> String? {
+        guard vault.state == .unlocked else { return nil }
+        let file = (pin.file as NSString).lastPathComponent
+        func account(_ identity: Identity) -> String? {
+            if case let .apiToken(_, accountID) = identity.mode { return accountID }
+            return nil
+        }
+        if let (identity, _) = vault.data.tokenIdentity(for: cwd) {
+            if let id = account(identity), id != pin.accountID {
+                return "\(file) pins account \(pin.accountID), but identity \(identity.name) is for account \(id). Deploys will fail or go to the wrong account."
+            }
+            return nil
+        }
+        if let match = vault.data.identities.first(where: { account($0) == pin.accountID }) {
+            return "\(file) pins account \(pin.accountID), which matches identity \(match.name). Bind it here with `redact id bind \(match.name)`."
+        }
+        return nil
     }
 
     private func list(_ request: BrokerRequest) -> BrokerResponse {
@@ -328,7 +353,8 @@ final class BrokerHandler {
             return (identity.name, "Redact API token, bound at \(path)")
         }
         let resolved = WranglerProfiles(configRoot: WranglerProfiles.defaultConfigRoot()).resolve(directory: cwd)
-        return ("wrangler:\(resolved.profile)", resolved.source)
+        let caveat = vault.state == .unlocked ? "" : " (vault locked: Redact API-token identities not checked; run `redact unlock`)"
+        return ("wrangler:\(resolved.profile)", resolved.source + caveat)
     }
 
     private func identities(_ request: BrokerRequest) -> BrokerResponse {

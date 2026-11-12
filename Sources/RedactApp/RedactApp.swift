@@ -54,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey(keyCode: 40, modifiers: [.option, .command]) { [weak self] in
             Task { @MainActor in self?.quickFind.toggle() }
         }
+        _ = quickFind // listen for menu bar "Quick find"
+        DevSnapshot.run(vault: vault, approvals: approvals)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

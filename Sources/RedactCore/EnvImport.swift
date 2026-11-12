@@ -107,7 +107,8 @@ public enum ProjectScanner {
         ".turbo", ".cache", "vendor", "Pods", "DerivedData", ".venv", "venv", "__pycache__", "coverage",
     ]
 
-    public static func scan(root: String, maxDepth: Int = 5) -> [Found] {
+    /// `excluding`: absolute paths of nested folders that are projects of their own; skipped.
+    public static func scan(root: String, maxDepth: Int = 5, excluding: Set<String> = []) -> [Found] {
         let rootURL = URL(fileURLWithPath: WranglerProfiles.realPath(root), isDirectory: true)
         var found: [Found] = []
         func visit(_ url: URL, depth: Int) {
@@ -119,7 +120,7 @@ public enum ProjectScanner {
                 let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if values?.isSymbolicLink == true { continue }
                 if values?.isDirectory == true {
-                    if !skippedDirectories.contains(name) { visit(child, depth: depth + 1) }
+                    if !skippedDirectories.contains(name), !excluding.contains(child.path) { visit(child, depth: depth + 1) }
                     continue
                 }
                 guard let classified = classify(fileName: name) else { continue }
@@ -182,7 +183,9 @@ public struct ImportPlan: Sendable {
     public var files: [ProjectScanner.Found]
 
     public static func build(root: String, project: Project?, vault: VaultData) throws -> ImportPlan {
-        let files = ProjectScanner.scan(root: root)
+        let realRoot = WranglerProfiles.realPath(root)
+        let nested = Set(vault.projects.map(\.path).filter { $0.hasPrefix(realRoot + "/") })
+        let files = ProjectScanner.scan(root: realRoot, excluding: nested)
         var rows: [Row] = []
         var exampleNames = Set<String>()
         var namesByEnvironment: [String: Set<String>] = [:]

@@ -99,6 +99,9 @@ public struct BrokerResponse: Codable, Sendable {
     public var warnings: [String]?
     public var message: String?
     public var activity: [ActivityEntry]?
+    /// `account_id` pinned by the folder's wrangler.toml / wrangler.jsonc, if any.
+    public var pinnedAccount: String?
+    public var pinnedAccountFile: String?
 
     public init(ok: Bool, error: String? = nil) {
         self.ok = ok

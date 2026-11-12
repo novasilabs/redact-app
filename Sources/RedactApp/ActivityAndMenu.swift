@@ -8,6 +8,12 @@ struct ActivityView: View {
     @EnvironmentObject var vault: VaultController
     @EnvironmentObject var approvals: ApprovalCenter
 
+    static let ago: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !approvals.activeGrants.isEmpty {
@@ -25,9 +31,14 @@ struct ActivityView: View {
                 .background(.yellow.opacity(0.12))
             }
             Table(vault.data.activity) {
-                TableColumn("When") { entry in Text(entry.date, style: .relative).foregroundStyle(.secondary) }.width(90)
+                TableColumn("When") { entry in
+                    Text(Self.ago.localizedString(for: entry.date, relativeTo: Date()))
+                        .foregroundStyle(.secondary)
+                        .help(entry.date.formatted(date: .abbreviated, time: .standard))
+                }
+                .width(90)
                 TableColumn("Who") { entry in Text(entry.agent ?? entry.caller) }.width(110)
-                TableColumn("Command") { entry in Text(entry.command).font(.callout.monospaced()).lineLimit(1) }
+                TableColumn("Command") { entry in Text(entry.command).font(.callout.monospaced()).lineLimit(1).help(entry.command) }
                 TableColumn("Variables") { entry in Text(entry.variableNames.joined(separator: ", ")).font(.caption.monospaced()).lineLimit(1) }
                 TableColumn("Result") { entry in
                     switch entry.outcome {
@@ -174,7 +185,7 @@ struct QuickFindView: View {
                     ForEach(Array(hits.enumerated()), id: \.element.id) { index, hit in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(hit.title).font(.body.monospaced())
+                                Text(hit.title).font(EnvFile.isValidName(hit.title) ? .body.monospaced() : .body)
                                 Text(hit.subtitle).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()

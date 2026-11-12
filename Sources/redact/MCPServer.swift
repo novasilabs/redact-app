@@ -145,7 +145,13 @@ enum MCPServer {
     }
 
     static func request(_ request: BrokerRequest) throws -> BrokerResponse {
-        let response = try BrokerClient.send(request)
+        let response: BrokerResponse
+        do {
+            response = try BrokerClient.send(request)
+        } catch BrokerError.appNotRunning {
+            guard launchApp() else { throw BrokerError.appNotRunning }
+            response = try BrokerClient.send(request)
+        }
         guard response.ok else { throw BrokerFailure(message: response.error ?? "Redact refused the request.") }
         return response
     }

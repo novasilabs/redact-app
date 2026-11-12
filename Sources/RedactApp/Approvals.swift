@@ -41,6 +41,11 @@ final class ApprovalCenter: ObservableObject {
 
     func revokeAll() { grants.removeAll() }
 
+    private var pendingDecision: ((ApprovalDecision) -> Void)?
+
+    /// Dev snapshots only: closes an open panel as "deny".
+    func dismissForSnapshot() { pendingDecision?(.deny) }
+
     func hasGrant(agent: String, projectPath: String, environment: String) -> Bool {
         let key = GrantKey(agent: agent, projectPath: projectPath, environment: environment)
         guard let until = grants[key] else { return false }
@@ -62,8 +67,10 @@ final class ApprovalCenter: ObservableObject {
                 finished = true
                 self?.panel?.close()
                 self?.panel = nil
+                self?.pendingDecision = nil
                 continuation.resume(returning: decision)
             }
+            self.pendingDecision = finish
             let view = ApprovalView(request: request, decide: finish)
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 320),
                                 styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],

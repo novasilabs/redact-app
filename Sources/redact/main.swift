@@ -34,9 +34,44 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
     exit(code)
 }
 
+/// The Redact.app this CLI belongs to (…/Redact.app/Contents/Resources/bin/redact), or one in /Applications.
+func appBundlePath() -> String? {
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let bundle = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    if bundle.pathExtension == "app" { return bundle.path }
+    for candidate in ["/Applications/Redact.app", NSHomeDirectory() + "/Applications/Redact.app"]
+    where FileManager.default.fileExists(atPath: candidate) { return candidate }
+    return nil
+}
+
+/// Starts Redact.app in the background and waits for its socket.
+func launchApp() -> Bool {
+    guard let app = appBundlePath() else { return false }
+    FileHandle.standardError.write(Data("redact: starting Redact…\n".utf8))
+    let open = Process()
+    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    var arguments = ["-g", "-a", app]
+    if let home = ProcessInfo.processInfo.environment["REDACT_HOME"] { arguments += ["--env", "REDACT_HOME=\(home)"] }
+    open.arguments = arguments
+    guard (try? open.run()) != nil else { return false }
+    open.waitUntilExit()
+    for _ in 0..<50 {
+        if FileManager.default.fileExists(atPath: RedactPaths.socket.path),
+           (try? BrokerClient.send(BrokerRequest(op: .status))) != nil { return true }
+        usleep(200_000)
+    }
+    return false
+}
+
 func send(_ request: BrokerRequest) -> BrokerResponse {
     do {
-        let response = try BrokerClient.send(request)
+        let response: BrokerResponse
+        do {
+            response = try BrokerClient.send(request)
+        } catch BrokerError.appNotRunning {
+            guard launchApp() else { throw BrokerError.appNotRunning }
+            response = try BrokerClient.send(request)
+        }
         if !response.ok { fail(response.error ?? "request failed") }
         for warning in response.warnings ?? [] {
             FileHandle.standardError.write(Data("redact: warning: \(warning)\n".utf8))
@@ -94,6 +129,9 @@ case "status":
         print("project:   none for this folder (run `redact init`)")
     }
     print("cloudflare: \(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+    if let pinned = response.pinnedAccount {
+        print("account:   \(pinned) (pinned by \(((response.pinnedAccountFile ?? "") as NSString).lastPathComponent))")
+    }
 
 case "lock":
     _ = send(BrokerRequest(op: .lock, cwd: cwd))
@@ -170,6 +208,11 @@ case "id":
     case "which":
         let response = send(BrokerRequest(op: .status, cwd: cwd))
         print("\(response.activeIdentity ?? "-") — \(response.activeIdentitySource ?? "")")
+        if let pinned = response.pinnedAccount {
+            print("account \(pinned) pinned by \(response.pinnedAccountFile ?? "")")
+        } else {
+            print("no account_id in wrangler config (tip: pin one so a deploy can't reach the wrong account)")
+        }
     case "bind":
         guard args.count >= 2 else { fail("usage: redact id bind NAME [dir]") }
         let dir = args.count > 2 ? URL(fileURLWithPath: args[2], relativeTo: URL(fileURLWithPath: cwd)).path : cwd

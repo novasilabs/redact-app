@@ -74,6 +74,12 @@ import Testing
     #expect(plan.rows.first { $0.environment == "production" && $0.name == "PORT" }?.status == .new)
     #expect(plan.missingFromExample["development"] == ["SENTRY_DSN"])
 
+    // A nested folder that is its own project is not scanned into the parent.
+    var withNested = vault
+    withNested.projects.append(Project(name: "api", path: root.appendingPathComponent("apps/api").path))
+    let parentOnly = try ImportPlan.build(root: root.path, project: project, vault: withNested)
+    #expect(!parentOnly.rows.contains { $0.name == "API_SECRET" })
+
     plan.apply(to: &vault, project: project)
     let env = vault.environment(projectID: project.id, environment: "development")
     #expect(env["OPENAI_API_KEY"] == "sk-proj-shared123456")

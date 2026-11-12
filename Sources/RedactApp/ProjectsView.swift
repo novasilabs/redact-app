@@ -34,7 +34,7 @@ struct ProjectsView: View {
                 }
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 250, maxWidth: 320)
+            .frame(minWidth: 180, idealWidth: 200, maxWidth: 300)
 
             Group {
                 if let id = selection, let project = vault.data.projects.first(where: { $0.id == id }) {
@@ -60,6 +60,10 @@ struct ProjectsView: View {
             }
             return true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .redactDevSelectFirst)) { _ in
+            selection = vault.data.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }.first?.id
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .redactDevImport)) { note in importRoot = note.object as? String }
         .sheet(item: Binding(get: { importRoot.map(ImportTarget.init) }, set: { importRoot = $0?.path })) { target in
             ImportSheet(root: target.path) { projectID in selection = projectID }
         }
@@ -112,12 +116,19 @@ struct ProjectDetailView: View {
 
     var variables: [Item] { vault.data.variables(projectID: project.id, environment: environment) }
 
+    /// The default environment, unless it is empty and another one has variables.
+    var initialEnvironment: String {
+        if !vault.data.variables(projectID: project.id, environment: project.defaultEnvironment).isEmpty { return project.defaultEnvironment }
+        return project.environments.first { !vault.data.variables(projectID: project.id, environment: $0).isEmpty } ?? project.defaultEnvironment
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(project.name).font(.title2.bold())
-                    Text(abbreviate(project.path)).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(abbreviate(project.path)).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).help(project.path)
                 }
                 Spacer()
                 Button("Re-scan files…", action: rescan)
@@ -142,12 +153,22 @@ struct ProjectDetailView: View {
                         Text(item.name).font(.system(.body, design: .monospaced))
                     }
                 }
-                .width(min: 160, ideal: 220)
+                .width(min: 120, ideal: 170, max: 280)
                 TableColumn("Value") { item in MaskedValue(value: vault.data.resolvedValue(of: item)) }
+                    .width(min: 190, ideal: 200)
                 TableColumn("Updated") { item in
-                    Text(item.updatedAt, style: .relative).foregroundStyle(.secondary).font(.caption)
+                    Text(ActivityView.ago.localizedString(for: item.updatedAt, relativeTo: Date()))
+                        .foregroundStyle(.secondary).font(.caption)
                 }
-                .width(90)
+                .width(70)
+            }
+            .overlay {
+                if variables.isEmpty {
+                    VStack(spacing: 6) {
+                        Text("No variables in \(environment)").font(.headline)
+                        Text("Add one below, or re-scan the project's env files.").foregroundStyle(.secondary)
+                    }
+                }
             }
             .contextMenu(forSelectionType: Item.ID.self) { ids in
                 if let id = ids.first, let item = variables.first(where: { $0.id == id }) {
@@ -179,8 +200,8 @@ struct ProjectDetailView: View {
                 .textSelection(.enabled)
                 .padding([.horizontal, .bottom], 16)
         }
-        .onAppear { environment = project.defaultEnvironment }
-        .onChange(of: project.id) { environment = project.defaultEnvironment }
+        .onAppear { environment = initialEnvironment }
+        .onChange(of: project.id) { environment = initialEnvironment }
     }
 
     private func add() {
@@ -238,13 +259,87 @@ struct ImportSheet: View {
     @State private var plan: ImportPlan?
     @State private var error: String?
     @State private var linkDuplicates = true
+    @State private var saved: (count: Int, before: VaultData, projectID: UUID)?
+    @State private var trashed = false
+    @State private var gitignoreAdded = false
 
     var project: Project? { vault.data.projects.first { $0.path == WranglerProfiles.realPath(root) } }
 
     var body: some View {
+        if let saved { doneView(saved) } else { reviewView }
+    }
+
+    private var plaintextFiles: [ProjectScanner.Found] { plan?.files.filter { !$0.isExample } ?? [] }
+
+    private var gitignoreNeedsEnv: Bool {
+        let root = WranglerProfiles.realPath(self.root)
+        guard FileManager.default.fileExists(atPath: root + "/.git") else { return false }
+        let ignore = (try? String(contentsOfFile: root + "/.gitignore", encoding: .utf8)) ?? ""
+        let lines = Set(ignore.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) })
+        return lines.isDisjoint(with: [".env", ".env*", ".env.*", "*.env", ".env*.local"])
+    }
+
+    private func doneView(_ saved: (count: Int, before: VaultData, projectID: UUID)) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Saved \(saved.count) variable\(saved.count == 1 ? "" : "s")", systemImage: "checkmark.circle.fill")
+                .font(.title2.bold())
+                .foregroundStyle(.green)
+            Text("Your project can now run with `redact run -- <command>`. The plaintext files below are no longer needed.")
+                .foregroundStyle(.secondary)
+            if !plaintextFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(plaintextFiles, id: \.path) { file in
+                        Label(file.relativePath, systemImage: trashed ? "trash" : "doc.plaintext")
+                            .font(.callout.monospaced())
+                            .foregroundStyle(trashed ? .secondary : .primary)
+                    }
+                }
+                Button(trashed ? "Moved to Trash" : "Move \(plaintextFiles.count) plaintext file\(plaintextFiles.count == 1 ? "" : "s") to Trash") { trashFiles() }
+                    .disabled(trashed)
+                Text("They stay recoverable in the Trash until you empty it.").font(.caption).foregroundStyle(.secondary)
+            }
+            if gitignoreNeedsEnv || gitignoreAdded {
+                Button(gitignoreAdded ? "Added to .gitignore" : "Add .env files to .gitignore") { addGitignore() }
+                    .disabled(gitignoreAdded)
+            }
+            HStack {
+                Button("Undo import") {
+                    let before = saved.before
+                    vault.update { data in
+                        let activity = data.activity
+                        data = before
+                        data.activity = activity
+                    }
+                    dismiss()
+                }
+                Spacer()
+                Button("Done") { onDone(saved.projectID); dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private func trashFiles() {
+        for file in plaintextFiles {
+            try? FileManager.default.trashItem(at: URL(fileURLWithPath: file.path), resultingItemURL: nil)
+        }
+        trashed = true
+    }
+
+    private func addGitignore() {
+        let path = WranglerProfiles.realPath(root) + "/.gitignore"
+        var text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
+        text += "\n# Secrets live in Redact\n.env\n.env.*\n!.env.example\n.dev.vars\n.dev.vars.*\n"
+        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        gitignoreAdded = true
+    }
+
+    private var reviewView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(project == nil ? "Add \((root as NSString).lastPathComponent)" : "Re-scan \(project!.name)").font(.title2.bold())
-            Text(abbreviate(root)).foregroundStyle(.secondary).font(.callout)
+            Text(abbreviate(root)).foregroundStyle(.secondary).font(.callout).lineLimit(1).truncationMode(.middle)
 
             if let error { Text(error).foregroundStyle(.red) }
             if let plan {
@@ -337,6 +432,7 @@ struct ImportSheet: View {
     private func save() {
         guard let plan else { return }
         let path = WranglerProfiles.realPath(root)
+        let before = vault.data
         var projectID = project?.id
         vault.update { data in
             var target = data.projects.first { $0.path == path }
@@ -353,7 +449,13 @@ struct ImportSheet: View {
             plan.apply(to: &data, project: target, linkDuplicates: linkDuplicates)
             projectID = target.id
         }
-        if let projectID { onDone(projectID) }
-        dismiss()
+        guard let projectID else { dismiss(); return }
+        let count = plan.rows.filter { $0.selected && !$0.shadowed }.count
+        if plaintextFiles.isEmpty && !gitignoreNeedsEnv {
+            onDone(projectID)
+            dismiss()
+        } else {
+            saved = (count, before, projectID)
+        }
     }
 }

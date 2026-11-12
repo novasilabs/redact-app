@@ -13,11 +13,13 @@ scripts/build-app.sh          # → build/Redact.app (ad-hoc signed), CLI at bui
 swift test                    # core tests
 ```
 
-To use the CLI from anywhere, link it onto your PATH, e.g.:
+Install for your user (copies the app to `~/Applications`, links `redact` into `~/.local/bin`, no sudo):
 
 ```sh
-ln -s "$PWD/build/Redact.app/Contents/Resources/bin/redact" ~/.local/bin/redact
+scripts/install.sh
 ```
+
+The CLI starts Redact.app in the background when it isn't running.
 
 ## Use
 

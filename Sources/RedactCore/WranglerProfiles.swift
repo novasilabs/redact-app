@@ -79,3 +79,88 @@ public struct WranglerProfiles {
         return String(cString: resolved)
     }
 }
+
+/// Reads the account a Worker project pins in its Wrangler config (`account_id`).
+public enum WranglerConfig {
+    public struct Pin: Equatable, Sendable {
+        public var accountID: String
+        public var file: String
+    }
+
+    static let fileNames = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
+
+    /// Looks in `directory` and its ancestors (nearest config wins), like Wrangler does.
+    public static func pinnedAccount(from directory: String, stopAt root: String = "/") -> Pin? {
+        var dir = URL(fileURLWithPath: WranglerProfiles.realPath(directory), isDirectory: true)
+        while true {
+            for name in fileNames {
+                let file = dir.appendingPathComponent(name)
+                guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                // A config file without account_id still stops the search: it is the project's config.
+                return accountID(in: text, toml: name.hasSuffix(".toml")).map { Pin(accountID: $0, file: file.path) }
+            }
+            if dir.path == root || dir.path == "/" { return nil }
+            dir.deleteLastPathComponent()
+        }
+    }
+
+    /// Top-level `account_id` only (not inside `[env.x]` tables or nested objects).
+    public static func accountID(in text: String, toml: Bool) -> String? {
+        if toml {
+            for rawLine in text.split(whereSeparator: \.isNewline) {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("[") { return nil } // first table: top level is over
+                guard line.hasPrefix("account_id") else { continue }
+                let parts = line.split(separator: "=", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                var value = parts[1].trimmingCharacters(in: .whitespaces)
+                if let hash = value.range(of: " #") { value = String(value[..<hash.lowerBound]) }
+                return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+            }
+            return nil
+        }
+        // JSON / JSONC: track brace depth, ignoring strings and comments.
+        var depth = 0
+        var i = text.startIndex
+        var inString = false
+        var stringStart = text.startIndex
+        var lastKey: String?
+        var expectValue = false
+        while i < text.endIndex {
+            let c = text[i]
+            if inString {
+                if c == "\\" { i = text.index(after: i) }
+                else if c == "\"" {
+                    inString = false
+                    let s = String(text[text.index(after: stringStart)..<i])
+                    if expectValue {
+                        if depth == 1 && lastKey == "account_id" { return s }
+                        expectValue = false
+                    } else {
+                        lastKey = s
+                    }
+                }
+            } else if c == "/" && text.index(after: i) < text.endIndex && text[text.index(after: i)] == "/" {
+                while i < text.endIndex && text[i] != "\n" { i = text.index(after: i) }
+                continue
+            } else if c == "/" && text.index(after: i) < text.endIndex && text[text.index(after: i)] == "*" {
+                if let end = text.range(of: "*/", range: i..<text.endIndex) { i = end.upperBound; continue }
+                return nil
+            } else if c == "\"" {
+                inString = true
+                stringStart = i
+            } else if c == ":" {
+                expectValue = true
+            } else if c == "," {
+                expectValue = false
+            } else if c == "{" || c == "[" {
+                depth += 1
+                expectValue = false
+            } else if c == "}" || c == "]" {
+                depth -= 1
+            }
+            if i < text.endIndex { i = text.index(after: i) }
+        }
+        return nil
+    }
+}
