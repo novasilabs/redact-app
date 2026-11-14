@@ -40,6 +40,9 @@ public struct BrokerRequest: Codable, Sendable {
     public var scan: ScanOptions?
     /// `resolve`: succeed with no values when the folder has no project or identity (shell wrappers).
     public var ifAny: Bool?
+    /// Picks a project by name instead of by folder (`redact -p NAME …`), e.g. one app of a monorepo
+    /// from the repo root. The broker treats the request as coming from that project's folder.
+    public var project: String?
     /// `resolve`: only the folder's identity credentials, not the project's variables (tool wrappers).
     public var identityOnly: Bool?
     /// `addIdentity`: provider raw value and optional scope (Cloudflare account ID, AWS profile name).

@@ -93,3 +93,55 @@ private func run(_ secrets: [String: String], _ input: String, chunkSizes: [Int]
     out += text(redactor.feed(Array("ecret-123456 ok".utf8))) + text(redactor.finish())
     #expect(out == "token=[redact:TOKEN] ok")
 }
+
+@Test func idleFlushNeverCutsThroughACompleteSecret() {
+    // Review finding: a complete secret ending the buffer, whose last byte starts another secret.
+    let redactor = Redactor(secrets: ["A": "abcdef0123s", "B": "sk_live_abcdefgh"])
+    var out = String(decoding: redactor.feed(Array("token=abcdef0123s".utf8)) + redactor.flushIdle(), as: UTF8.self)
+    out += String(decoding: redactor.finish(), as: UTF8.self)
+    #expect(out == "token=[redact:A]")
+}
+
+@Test func idleFlushNeverEmitsAPrefixOfASecret() {
+    // Property: whatever is printed before more output arrives contains no 2+ byte prefix of a secret
+    // that continues in the bytes that follow.
+    let secrets = ["A": "abcdef0123s", "B": "sk_live_abcdefgh", "C": "ssh-key-XYZ12345"]
+    var generator = SystemRandomNumberGenerator()
+    let alphabet = Array("abcdefs0123_klivXYZ-h ".utf8)
+    for _ in 0..<300 {
+        let redactor = Redactor(secrets: secrets)
+        var input: [UInt8] = []
+        for _ in 0..<Int.random(in: 1...4, using: &generator) {
+            input += (0..<Int.random(in: 0...8, using: &generator)).map { _ in alphabet.randomElement(using: &generator)! }
+            input += Array(secrets.values.randomElement(using: &generator)!.utf8)
+        }
+        let split = Int.random(in: 0...input.count, using: &generator)
+        let early = redactor.feed(input[..<split]) + redactor.flushIdle()
+        let all = early + redactor.feed(input[split...]) + redactor.finish()
+        let text = String(decoding: all, as: UTF8.self)
+        for value in secrets.values { #expect(!text.contains(value)) }
+        let earlyText = String(decoding: early, as: UTF8.self)
+        // The early part, once no more placeholders are added, must not end with a secret's start.
+        for value in secrets.values {
+            for n in 2..<value.count where earlyText.hasSuffix(String(value.prefix(n))) {
+                let rest = String(decoding: Array(input[split...]), as: UTF8.self)
+                #expect(!rest.hasPrefix(String(value.dropFirst(n))), "leaked \(n) bytes of a secret before more output")
+            }
+        }
+    }
+}
+
+@Test func masksHexLowercasePercentAndMisalignedBase64() {
+    let secret = "pa55/word+Secret-9x"
+    let redactor = Redactor(secrets: ["DB_PASSWORD": secret])
+    func masked(_ text: String) -> String { String(decoding: redactor.feed(Array(text.utf8)) + redactor.finish(), as: UTF8.self) }
+    let hex = Data(secret.utf8).map { String(format: "%02x", $0) }.joined()
+    #expect(!masked("dump: \(hex)").contains(hex))
+    #expect(!masked("dump: \(hex.uppercased())").contains(hex.uppercased()))
+    #expect(!masked("q=pa55%2fword%2bSecret-9x").contains("pa55%2fword"))
+    for user in ["a", "ab", "abc", "admin"] {
+        let basic = Data("\(user):\(secret)".utf8).base64EncodedString()
+        let out = masked("Authorization: Basic \(basic)")
+        #expect(out.contains("[redact:DB_PASSWORD]"), "Basic auth with user \(user)")
+    }
+}

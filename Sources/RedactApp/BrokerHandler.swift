@@ -14,7 +14,35 @@ final class BrokerHandler {
         self.llmProxy = llmProxy
     }
 
+    /// The `redact` CLI inside this app bundle, pinned by its code directory hash.
+    static let bundledCLIHash: Data? = PeerIdentity.cdhash(ofFile: Bundle.main.bundlePath + "/Contents/Resources/bin/redact")
+
+    /// Whether the peer is exactly the `redact` binary this app ships (not a script talking to the socket).
+    static func isGenuineCLI(_ peer: PeerIdentity) -> Bool {
+        guard let expected = bundledCLIHash, peer.signatureValid, let hash = peer.cdhash else { return false }
+        return hash == expected
+    }
+
+    /// Who to show in approvals, or nil when it is plainly the user: the genuine CLI, started from a
+    /// terminal app, with no AI agent above it. Everything else (agents, scripts, detached or
+    /// background processes) is asked about, with Touch ID.
+    static func caller(_ peer: PeerIdentity, viaMCP: Bool) -> String? {
+        if viaMCP { return peer.agentGuess ?? "An MCP agent" }
+        if let agent = peer.agentGuess { return agent }
+        if isGenuineCLI(peer) && peer.launchedFromTerminal { return nil }
+        let name = (peer.path as NSString).lastPathComponent
+        return isGenuineCLI(peer) ? "redact, not started from a terminal" : "\(name.isEmpty ? "An unknown program" : name)"
+    }
+
     func handle(_ request: BrokerRequest, peer: PeerIdentity) async -> BrokerResponse {
+        var request = request
+        let caller = Self.caller(peer, viaMCP: request.viaMCP == true)
+        if let name = request.project {
+            switch Self.projectFolder(named: name, in: vault.state == .unlocked ? vault.data.projects : vault.projectIndex) {
+            case .success(let path): request.cwd = path
+            case .failure(let message): return .failure(message.text)
+            }
+        }
         switch request.op {
         case .status: return status(request)
         case .lock:
@@ -22,7 +50,8 @@ final class BrokerHandler {
             return BrokerResponse(ok: true)
         case .unlock:
             guard vault.state != .noVault else { return .failure(Self.noVaultMessage) }
-            return await vault.unlock() ? status(request) : .failure(vault.lastError ?? "Unlock failed.")
+            let reason = caller.map { "let \($0) unlock your Redact vault" } ?? "unlock your Redact vault"
+            return await vault.unlock(reason: reason) ? status(request) : .failure(vault.lastError ?? "Unlock failed.")
         case .endProxy:
             llmProxy.endSessions(request.proxySessions ?? [])
             return BrokerResponse(ok: true)
@@ -31,7 +60,7 @@ final class BrokerHandler {
             return identities(request)
         case .bindIdentity:
             // Rebinding could send an agent's deploys to another account: needs the user's approval.
-            if let agent = request.viaMCP == true ? (peer.agentGuess ?? "An MCP agent") : peer.agentGuess {
+            if let agent = caller {
                 if request.viaMCP == true { return .failure("Agents can't change identity bindings.") }
                 let action = "redact id bind \(request.name ?? "") \(request.path ?? request.cwd)"
                 let decision = await approvals.ask(ApprovalRequest(
@@ -55,9 +84,14 @@ final class BrokerHandler {
 
         // Everything below needs the vault open.
         guard vault.state != .noVault else { return .failure(Self.noVaultMessage) }
-        let agent = request.viaMCP == true ? (peer.agentGuess ?? "An MCP agent") : peer.agentGuess
+        let agent = caller
 
         if request.op == .resolve {
+            // Values only ever go to the redact CLI, which runs the command it showed in the approval.
+            // A script on the socket could show "npm test" and keep the values for itself.
+            guard Self.isGenuineCLI(peer) else {
+                return .failure("Only the redact command can receive secret values. Use `redact run -- CMD`.")
+            }
             return await resolve(request, peer: peer, agent: agent)
         }
         if vault.state == .locked {
@@ -99,7 +133,10 @@ final class BrokerHandler {
             return response
         case .scan:
             guard let options = request.scan else { return .failure("Nothing to scan.") }
-            let secrets = Self.scanSecrets(vault.data)
+            var secrets = Self.scanSecrets(vault.data)
+            // Anyone but the user could use scan as an oracle: "does this guess match a vault value?".
+            // For them, only look for long values, which can't be guessed.
+            if agent != nil { secrets = secrets.filter { $0.value.count >= 20 } }
             let findings = await Task.detached { HealthScan.run(options, secrets: secrets) }.value
             var response = BrokerResponse(ok: true)
             response.findings = findings
@@ -188,7 +225,7 @@ final class BrokerHandler {
     }
 
     private func list(_ request: BrokerRequest) -> BrokerResponse {
-        guard let project = vault.data.project(containing: request.cwd) else { return .failure(Self.noProject(request.cwd)) }
+        guard let project = vault.data.project(containing: request.cwd) else { return .failure(noProject(request.cwd)) }
         let environments = request.environment.map { [$0] } ?? project.environments
         var response = BrokerResponse(ok: true)
         response.project = project.name
@@ -205,8 +242,35 @@ final class BrokerHandler {
         return response
     }
 
-    static func noProject(_ cwd: String) -> String {
-        "No Redact project contains \(cwd). Run `redact init` there, or drop the folder on Redact."
+    func noProject(_ cwd: String) -> String {
+        Self.noProject(cwd, projects: vault.state == .unlocked ? vault.data.projects : vault.projectIndex)
+    }
+
+    /// Explains a folder with no project. A monorepo root gets the projects inside it and how to pick one.
+    static func noProject(_ cwd: String, projects: [Project] = []) -> String {
+        let root = WranglerProfiles.realPath(cwd)
+        let inside = projects.filter { $0.path.hasPrefix(root + "/") }.sorted { $0.path < $1.path }
+        guard let first = inside.first else {
+            return "No Redact project contains \(cwd). Run `redact init` there, or drop the folder on Redact."
+        }
+        let list = inside.map { "\($0.name) (\(String($0.path.dropFirst(root.count + 1))))" }.joined(separator: ", ")
+        return "\((cwd as NSString).lastPathComponent) has \(inside.count) project\(inside.count == 1 ? "" : "s") inside it: \(list). "
+            + "Run inside one, or pick one by name: `redact run -p \(first.name) -- …`"
+    }
+
+    struct Message: Error { let text: String }
+
+    /// The folder of the project called `name` (case-insensitive).
+    static func projectFolder(named name: String, in projects: [Project]) -> Result<String, Message> {
+        let matches = projects.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        switch matches.count {
+        case 1: return .success(matches[0].path)
+        case 0:
+            let names = projects.map(\.name).sorted().joined(separator: ", ")
+            return .failure(Message(text: "No project called \(name). Projects: \(names.isEmpty ? "none yet" : names)."))
+        default:
+            return .failure(Message(text: "\(matches.count) projects are called \(name): \(matches.map(\.path).joined(separator: ", ")). Run inside the one you mean."))
+        }
     }
 
     // MARK: - Resolve (the sensitive one)
@@ -301,7 +365,7 @@ final class BrokerHandler {
                 response.values = [:]
                 return response
             }
-            return .failure(Self.noProject(request.cwd))
+            return .failure(noProject(request.cwd))
         }
 
         if let agent, decision == .fifteenMinutes, let project {
@@ -383,7 +447,7 @@ final class BrokerHandler {
     // MARK: - Changes
 
     private func set(_ request: BrokerRequest) -> BrokerResponse {
-        guard let project = vault.data.project(containing: request.cwd) else { return .failure(Self.noProject(request.cwd)) }
+        guard let project = vault.data.project(containing: request.cwd) else { return .failure(noProject(request.cwd)) }
         guard let name = request.name, EnvFile.isValidName(name) else { return .failure("Invalid variable name.") }
         guard let value = request.value else { return .failure("No value given.") }
         let environment = request.environment ?? project.defaultEnvironment
@@ -405,7 +469,7 @@ final class BrokerHandler {
     }
 
     private func remove(_ request: BrokerRequest) -> BrokerResponse {
-        guard let project = vault.data.project(containing: request.cwd) else { return .failure(Self.noProject(request.cwd)) }
+        guard let project = vault.data.project(containing: request.cwd) else { return .failure(noProject(request.cwd)) }
         guard let name = request.name else { return .failure("No variable name.") }
         let environment = request.environment ?? project.defaultEnvironment
         var removed = false
@@ -443,7 +507,7 @@ final class BrokerHandler {
         if vault.data.project(containing: root) == nil {
             _ = initProject(BrokerRequest(op: .initProject, cwd: root))
         }
-        guard let project = vault.data.project(containing: root) else { return .failure(Self.noProject(root)) }
+        guard let project = vault.data.project(containing: root) else { return .failure(noProject(root)) }
         do {
             var plan = try ImportPlan.build(root: root, project: project, vault: vault.data)
             if let environment = request.environment {

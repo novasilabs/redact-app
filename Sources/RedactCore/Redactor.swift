@@ -81,14 +81,38 @@ public final class Redactor {
                   let string = String(data: encoded, encoding: .utf8) else { return value }
             return String(string.dropFirst().dropLast())
         }()
-        return [
+        let hex = data.map { String(format: "%02x", $0) }.joined()
+        let percentLower = percent.lowercasedPercentEscapes()
+        var result: [(String, String)] = [
             ("raw", value),
             ("base64", base64),
             ("base64-nopad", base64NoPad),
             ("base64url", base64URL),
             ("percent", percent),
+            ("percent-lower", percentLower),
             ("json", json),
+            ("hex", hex),
+            ("hex-upper", hex.uppercased()),
         ]
+        // Base64 of text that contains the secret (e.g. "user:" + secret in Basic auth): the secret
+        // lands at any of three byte offsets, and only the groups made purely of its bytes are stable.
+        for offset in 0..<3 {
+            if let middle = stableBase64(of: data, offset: offset), middle.count >= 12 {
+                result.append(("base64-offset\(offset)", middle))
+                let url = middle.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                if url != middle { result.append(("base64url-offset\(offset)", url)) }
+            }
+        }
+        return result
+    }
+
+    /// The base64 characters that depend only on `data` when it starts `offset` bytes into a 3-byte group
+    /// and is followed by anything.
+    static func stableBase64(of data: Data, offset: Int) -> String? {
+        let skip = (3 - offset) % 3                 // secret bytes that share a group with what comes before
+        let usable = (data.count - skip) / 3 * 3     // whole groups made only of secret bytes
+        guard usable >= 3 else { return nil }
+        return data.subdata(in: skip..<(skip + usable)).base64EncodedString()
     }
 
     /// Feed a chunk; returns the bytes that are safe to emit now.
@@ -111,17 +135,37 @@ public final class Redactor {
     public func flushIdle() -> [UInt8] {
         let count = pending.count
         guard count > 0, maxLength > 0 else { return finish() }
-        var hold = count
+        // Cut before the earliest byte that could start a secret not yet complete...
+        var cut = count
         for start in max(0, count - (maxLength - 1))..<count where isPartialMatch(from: start) {
-            hold = start
+            cut = start
             break
         }
-        if hold == count { return drain(final: true) }
-        let tail = Array(pending[hold...])
-        pending.removeSubrange(hold...)
+        // ...but never through a complete secret: if one starts before the cut and ends after it,
+        // move the cut to its end so it is masked whole (repeat, matches can chain).
+        var moved = true
+        while moved {
+            moved = false
+            for start in max(0, cut - (maxLength - 1))..<cut {
+                if let length = fullMatchLength(at: start), start + length > cut {
+                    cut = start + length
+                    moved = true
+                    break
+                }
+            }
+        }
+        if cut >= count { return drain(final: true) }
+        let tail = Array(pending[cut...])
+        pending.removeSubrange(cut...)
         let output = drain(final: true)
         pending = tail
         return output
+    }
+
+    /// Length of the longest pattern that matches completely at `start`, if any.
+    private func fullMatchLength(at start: Int) -> Int? {
+        let rest = pending[start...]
+        return patterns.filter { $0.bytes.count <= rest.count && rest.starts(with: $0.bytes) }.map(\.bytes.count).max()
     }
 
     /// Whether `pending[start...]` is a proper prefix of some pattern.
@@ -170,5 +214,23 @@ public final class Redactor {
         }
         pending.removeSubrange(0..<min(i, count))
         return output
+    }
+}
+
+private extension String {
+    /// "%2F" → "%2f": some encoders use lowercase hex digits.
+    func lowercasedPercentEscapes() -> String {
+        var out = ""
+        var index = startIndex
+        while index < endIndex {
+            if self[index] == "%", let end = self.index(index, offsetBy: 3, limitedBy: endIndex) {
+                out += self[index..<end].lowercased()
+                index = end
+            } else {
+                out.append(self[index])
+                index = self.index(after: index)
+            }
+        }
+        return out
     }
 }

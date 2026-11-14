@@ -14,9 +14,12 @@ public enum VaultKeyWrap {
 
     static let info = Data("redact.vault-key.v1".utf8)
 
-    public static func makeEnclaveKey(requireBiometry: Bool) throws -> SecureEnclave.P256.KeyAgreement.PrivateKey {
+    public static func makeEnclaveKey(requireBiometry: Bool, unprotectedForDemoVault: Bool = false) throws -> SecureEnclave.P256.KeyAgreement.PrivateKey {
+        // Always require the owner: Touch ID when the Mac has it, otherwise the Mac password. A key with
+        // only `.privateKeyUsage` could be used by any process of this user that reads the vault file.
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
-        if requireBiometry { flags.insert(.biometryCurrentSet) }
+        // Demo vaults (screenshots, devtool) hold fake data and must open without a prompt.
+        if !unprotectedForDemoVault { flags.insert(requireBiometry ? .biometryCurrentSet : .userPresence) }
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, flags, &error) else {
             throw error!.takeRetainedValue() as Error

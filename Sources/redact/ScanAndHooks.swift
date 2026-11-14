@@ -125,7 +125,7 @@ enum HookCommand {
         let script = """
         #!/bin/sh
         \(marker) — blocks commits that contain secrets. Remove with: redact hook uninstall
-        REDACT="$(command -v redact 2>/dev/null || echo '\(selfPath)')"
+        REDACT="$(command -v redact 2>/dev/null || echo \(shellQuote(selfPath)))"
         if [ -x "$REDACT" ]; then
           "$REDACT" scan --staged --quiet || exit 1
         fi
@@ -164,18 +164,30 @@ enum HookCommand {
         exit(0)
     }
 
+    /// Single-quotes a string for sh.
+    static func shellQuote(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static func printShellHook(_ shellName: String, wrap tools: [String]) -> Never {
         var wrappers = ""
         if !tools.isEmpty {
             wrappers = "\n# Run these tools with the account bound to the current folder (credentials only, no project variables).\n"
-            for tool in tools {
+            for tool in tools where tool.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil {
                 wrappers += "\(tool)() { command redact run --if-any --identity-only -- \(tool) \"$@\"; }\n"
             }
         }
         if shellName == "zsh" {
             print("""
             # Redact shell integration. Add to ~/.zshrc:  eval "$(redact hook zsh)"
-            alias rr='redact run --'
+            # rr CMD runs CMD with this folder's secrets. rr -p NAME CMD picks a project by name (monorepo roots),
+            # rr --env production CMD picks the environment.
+            unalias rr 2>/dev/null
+            rr() {
+              local opts=()
+              while [ "$1" = "-p" ] || [ "$1" = "--project" ] || [ "$1" = "--env" ]; do opts+=("$1" "$2"); shift 2; done
+              command redact run "${opts[@]}" -- "$@"
+            }
             _redact_chpwd() {
               local out info aws
               out="$(command redact _prompt --shell 2>/dev/null)"
@@ -183,7 +195,7 @@ enum HookCommand {
               aws=""; [[ "$out" == *$'\\n'* ]] && aws="${out#*$'\\n'}"
               if [[ "$info" != "$_REDACT_LAST" ]]; then
                 _REDACT_LAST="$info"
-                [[ -n "$info" ]] && print -P "%F{8}redact: ${info//\\%/%%}%f"
+                [[ -n "$info" ]] && print -r -- $'\\e[90m'"redact: $info"$'\\e[0m'
               fi
               export REDACT_PROMPT="$info"
               # AWS_PROFILE follows the folder, unless you set your own.
@@ -200,7 +212,14 @@ enum HookCommand {
         } else {
             print("""
             # Redact shell integration. Add to ~/.bashrc:  eval "$(redact hook bash)"
-            alias rr='redact run --'
+            # rr CMD runs CMD with this folder's secrets. rr -p NAME CMD picks a project by name (monorepo roots),
+            # rr --env production CMD picks the environment.
+            unalias rr 2>/dev/null
+            rr() {
+              local opts=()
+              while [ "$1" = "-p" ] || [ "$1" = "--project" ] || [ "$1" = "--env" ]; do opts+=("$1" "$2"); shift 2; done
+              command redact run "${opts[@]}" -- "$@"
+            }
             _redact_prompt_command() {
               [ "$PWD" = "$_REDACT_PWD" ] && return
               _REDACT_PWD="$PWD"

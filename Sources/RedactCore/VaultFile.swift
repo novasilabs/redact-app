@@ -122,8 +122,9 @@ public struct VaultFile: Codable, Sendable {
 
     // MARK: - Key protectors
 
-    public static func enclaveProtector(for vaultKey: SymmetricKey, requireBiometry: Bool) throws -> Protector {
-        let enclaveKey = try VaultKeyWrap.makeEnclaveKey(requireBiometry: requireBiometry)
+    public static func enclaveProtector(for vaultKey: SymmetricKey, requireBiometry: Bool,
+                                        unprotectedForDemoVault: Bool = false) throws -> Protector {
+        let enclaveKey = try VaultKeyWrap.makeEnclaveKey(requireBiometry: requireBiometry, unprotectedForDemoVault: unprotectedForDemoVault)
         let wrapped = try VaultKeyWrap.wrap(vaultKey: vaultKey, to: enclaveKey.publicKey)
         return Protector(kind: .enclave, keyHandle: enclaveKey.dataRepresentation, wrapped: wrapped,
                          sealed: nil, salt: nil, createdAt: Date())
@@ -131,13 +132,16 @@ public struct VaultFile: Codable, Sendable {
 
     /// Protector for a high-entropy secret (the Recovery Key, or a test key). No slow KDF is needed
     /// because the secret is 256 random bits, not a password.
-    /// The same vault with a new Recovery Key. The old key (and backups made with it) stop opening this
-    /// vault; other protectors (Touch ID) are kept. `vaultKey` must be this vault's key.
-    public func replacingRecoveryKey(vaultKey: SymmetricKey, with secret: Data) throws -> VaultFile {
-        var copy = self
-        copy.protectors.removeAll { $0.kind == .recovery }
-        copy.protectors.append(try Self.secretProtector(for: vaultKey, secret: secret, kind: .recovery))
-        return copy
+    /// A new vault key for the same data, protected by a new Recovery Key and `otherProtectors`
+    /// (made for the new key, e.g. a fresh Touch ID protector). Used when a Recovery Key is lost: the
+    /// old key, together with any older copy of the vault, then opens nothing that exists now.
+    public static func rotated(_ data: VaultData, recoverySecret: Data,
+                               protectors makeProtectors: (SymmetricKey) throws -> [Protector]) throws -> (file: VaultFile, key: SymmetricKey) {
+        let newKey = SymmetricKey(size: .bits256)
+        var protectors = try makeProtectors(newKey)
+        protectors.append(try secretProtector(for: newKey, secret: recoverySecret, kind: .recovery))
+        let file = VaultFile(format: currentFormat, protectors: protectors, records: try seal(data, previous: nil, key: newKey))
+        return (file, newKey)
     }
 
     public static func secretProtector(for vaultKey: SymmetricKey, secret: Data, kind: Protector.Kind) throws -> Protector {

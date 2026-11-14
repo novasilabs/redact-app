@@ -121,17 +121,21 @@ final class VaultController: ObservableObject {
     // MARK: - Recovery Key
 
     /// Replaces the Recovery Key after Touch ID (or the Mac password). Returns the new key to show once.
-    /// The old key, and backups made with it, no longer open this vault.
+    /// The vault key is rotated too, so the old Recovery Key plus an older copy of the vault (Time
+    /// Machine, an old backup) can't open what is in the vault from now on.
     func replaceRecoveryKey() async throws -> String {
-        guard state == .unlocked, let file, let key else { throw VaultError.locked }
+        guard state == .unlocked, file != nil, key != nil else { throw VaultError.locked }
         let context = LAContext()
         guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "replace your Recovery Key") else {
             throw VaultError.locked
         }
         let secret = RecoveryKey.generate()
-        let updated = try file.replacingRecoveryKey(vaultKey: key, with: secret)
-        try updated.write(to: RedactPaths.vault)
-        self.file = updated
+        let rotated = try VaultFile.rotated(data, recoverySecret: secret) { newKey in
+            [try VaultFile.enclaveProtector(for: newKey, requireBiometry: Self.biometryAvailable)]
+        }
+        try rotated.file.write(to: RedactPaths.vault)
+        self.file = rotated.file
+        self.key = rotated.key
         touch()
         return RecoveryKey.format(secret)
     }

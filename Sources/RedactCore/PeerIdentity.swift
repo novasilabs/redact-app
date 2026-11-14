@@ -16,6 +16,17 @@ public struct PeerIdentity: Codable, Sendable, CustomStringConvertible {
     public var teamIdentifier: String?
     public var signatureValid: Bool
     public var ancestors: [Ancestor]
+    /// Code directory hash of the peer's running code: pins the exact binary.
+    public var cdhash: Data?
+
+    /// Terminal apps a person types into. A command counts as "you" only when one of these started it.
+    static let terminalApps = ["/Terminal.app/", "/iTerm.app/", "/Ghostty.app/", "/WezTerm.app/", "/Alacritty.app/",
+                               "/kitty.app/", "/Warp.app/", "/Hyper.app/", "/Tabby.app/", "/Rio.app/"]
+
+    /// Whether a terminal app is among the peer's ancestors (a detached process has none: its parent is launchd).
+    public var launchedFromTerminal: Bool {
+        ancestors.contains { a in Self.terminalApps.contains { a.path.contains($0) } }
+    }
 
     /// Best-effort guess at which AI agent (if any) launched the peer.
     public var agentGuess: String? { Self.agent(in: ancestors) }
@@ -48,6 +59,17 @@ public struct PeerIdentity: Codable, Sendable, CustomStringConvertible {
         """
     }
 
+    /// The code directory hash of a binary on disk (to compare with a peer's `cdhash`).
+    public static func cdhash(ofFile path: String) -> Data? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &staticCode) == errSecSuccess, let staticCode,
+              SecStaticCodeCheckValidity(staticCode, [], nil) == errSecSuccess else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict[kSecCodeInfoUnique as String] as? Data
+    }
+
     /// Reads the peer's audit token from a connected Unix socket (immune to PID reuse for the code check).
     public static func of(socket fd: Int32) throws -> PeerIdentity {
         var token = audit_token_t()
@@ -60,6 +82,7 @@ public struct PeerIdentity: Codable, Sendable, CustomStringConvertible {
 
         var signingIdentifier: String?
         var teamIdentifier: String?
+        var cdhash: Data?
         var valid = false
         let tokenData = withUnsafeBytes(of: &token) { Data($0) }
         var code: SecCode?
@@ -73,6 +96,7 @@ public struct PeerIdentity: Codable, Sendable, CustomStringConvertible {
                    let dict = info as? [String: Any] {
                     signingIdentifier = dict[kSecCodeInfoIdentifier as String] as? String
                     teamIdentifier = dict[kSecCodeInfoTeamIdentifier as String] as? String
+                    cdhash = dict[kSecCodeInfoUnique as String] as? Data
                 }
             }
         }
@@ -80,7 +104,7 @@ public struct PeerIdentity: Codable, Sendable, CustomStringConvertible {
         return PeerIdentity(
             pid: pid, uid: uid, path: Self.path(of: pid) ?? "?",
             signingIdentifier: signingIdentifier, teamIdentifier: teamIdentifier,
-            signatureValid: valid, ancestors: Self.ancestors(of: pid)
+            signatureValid: valid, ancestors: Self.ancestors(of: pid), cdhash: cdhash
         )
     }
 

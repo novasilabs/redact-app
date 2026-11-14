@@ -40,6 +40,10 @@ printf '%s' "$NEW_KEY" | redact set STRIPE_SECRET_KEY --env production
 
 `redact run` detects AI agents (Claude Code, Cursor, Codex, …) in its process tree. For them, Redact shows an approval panel on your Mac (Deny / Allow once / Allow for 15 min) and asks for Touch ID; output is always masked as `[redact:NAME]`.
 
+Only the `redact` binary shipped inside Redact.app (checked by its code signature hash) ever receives values; a script talking to the socket directly is refused. A command runs without asking only when it plainly comes from you: started in a terminal app (Terminal, iTerm, Ghostty, WezTerm, …) with no AI agent above it. Anything else, including detached background processes and IDE terminals, gets the approval panel and Touch ID.
+
+Monorepos: each app can be its own project. From the repo root, pick one by name with `-p`: `rr -p driver pnpm --filter driver dev` (works with every command: `redact ls -p driver`).
+
 Add the MCP server to Claude Code:
 
 ```sh
@@ -89,7 +93,7 @@ The app's **Health** screen runs the same scan across all your projects. Vault v
 eval "$(redact hook zsh)"      # in ~/.zshrc  (or: redact hook bash)
 ```
 
-Shows `redact: demo-app · development · cf: acme · gh: work · aws: acme-prod` when you `cd` into a project, sets `$REDACT_PROMPT` for your prompt, exports `AWS_PROFILE` for folders bound to an AWS account (never overriding one you set yourself), and adds `rr` = `redact run --`.
+Shows `redact: demo-app · development · cf: acme · gh: work · aws: acme-prod` when you `cd` into a project, sets `$REDACT_PROMPT` for your prompt, exports `AWS_PROFILE` for folders bound to an AWS account (never overriding one you set yourself), and adds `rr` = `redact run --` (`rr -p NAME …` and `rr --env production …` work too).
 
 Add `--wrap gh,vercel,supabase,wrangler` to run those tools with the account bound to the current folder. Wrappers inject only that account's credentials (not your project variables), pass straight through when nothing is bound or Redact isn't running, and never start the app.
 

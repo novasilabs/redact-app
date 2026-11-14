@@ -58,7 +58,7 @@ let recovery = RecoveryKey.generate()
 let file = VaultFile(
     format: VaultFile.currentFormat,
     protectors: [
-        try VaultFile.enclaveProtector(for: vaultKey, requireBiometry: false),
+        try VaultFile.enclaveProtector(for: vaultKey, requireBiometry: false, unprotectedForDemoVault: true),
         try VaultFile.secretProtector(for: vaultKey, secret: recovery, kind: .recovery),
     ],
     records: try VaultFile.seal(data, previous: nil, key: vaultKey)

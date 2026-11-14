@@ -14,7 +14,7 @@ USAGE
   redact ls [--env E]                   list variable names (never values)
   redact set NAME [--env E]             set a value (read from stdin, or prompted without echo)
   redact rm NAME [--env E]              remove a variable
-  redact run [--env E] [--mask|--no-mask] [--llm-proxy] -- CMD [ARGS...]
+  redact run [-p PROJECT] [--env E] [--mask|--no-mask] [--llm-proxy] -- CMD [ARGS...]
                                         run CMD with the project's variables injected
                                         (--llm-proxy: OpenAI/Anthropic keys stay in Redact; always on for agents)
   redact id ls                          list identities (accounts) and their folders
@@ -31,6 +31,9 @@ USAGE
   redact activity                       recent requests: who ran what, with which variable names
   redact lock | unlock
   redact mcp                            MCP server for AI agents (names only, never values)
+
+-p PROJECT works with any command: use that project instead of the folder's (e.g. one app of a monorepo,
+from the repo root: `rr -p driver pnpm --filter driver dev`).
 
 Output of `redact run` is masked ([redact:NAME]) whenever it is not going to your own terminal,
 or when an AI agent is detected in the process tree.
@@ -73,6 +76,8 @@ func launchApp() -> Bool {
 }
 
 func send(_ request: BrokerRequest) -> BrokerResponse {
+    var request = request
+    if request.project == nil { request.project = selectedProject }
     do {
         let response: BrokerResponse
         do {
@@ -121,6 +126,16 @@ func readSecretValue(name: String) -> String {
 
 var args = Array(CommandLine.arguments.dropFirst())
 let cwd = FileManager.default.currentDirectoryPath
+/// `-p NAME` / `--project NAME` (before the command or among its options, never after `--`): use that
+/// project instead of the one containing this folder. For monorepo roots.
+let selectedProject: String? = {
+    let end = args.firstIndex(of: "--") ?? args.endIndex
+    var head = Array(args[..<end])
+    let tail = Array(args[end...])
+    let value = takeOption("--project", from: &head) ?? takeOption("-p", from: &head)
+    args = head + tail
+    return value
+}()
 guard let command = args.first else { print(usage); exit(0) }
 args.removeFirst()
 
@@ -202,6 +217,7 @@ case "run":
     if noMask && agent != nil { fail("--no-mask is not allowed when an AI agent (\(agent!)) is running this command") }
 
     var resolveRequest = BrokerRequest(op: .resolve, cwd: cwd, environment: environment, command: commandLine)
+    resolveRequest.project = selectedProject
     resolveRequest.ifAny = ifAny ? true : nil
     resolveRequest.identityOnly = identityOnly ? true : nil
     resolveRequest.llmProxy = llmProxy ? true : nil
