@@ -232,7 +232,11 @@ case "run":
     } else {
         response = send(resolveRequest)
     }
-    let values = response.values ?? [:]
+    var values = response.values ?? [:]
+    // Workers: let wrangler dev / the Cloudflare Vite plugin see these values instead of .dev.vars.
+    let wrangler = WranglerDevSecrets.plan(cwd: cwd, projectRoot: response.projectPath, injected: values)
+    values.merge(wrangler.environment) { current, _ in current }
+    if let warning = wrangler.warning { FileHandle.standardError.write(Data("redact: note: \(warning)\n".utf8)) }
     let interactiveHuman = agent == nil && isatty(STDOUT_FILENO) != 0 && isatty(STDERR_FILENO) != 0
     let mask = forceMask || !(noMask || interactiveHuman)
     let status = CommandRunner.run(commandLine, extraEnvironment: values, mask: mask,
