@@ -131,6 +131,15 @@ public struct VaultFile: Codable, Sendable {
 
     /// Protector for a high-entropy secret (the Recovery Key, or a test key). No slow KDF is needed
     /// because the secret is 256 random bits, not a password.
+    /// The same vault with a new Recovery Key. The old key (and backups made with it) stop opening this
+    /// vault; other protectors (Touch ID) are kept. `vaultKey` must be this vault's key.
+    public func replacingRecoveryKey(vaultKey: SymmetricKey, with secret: Data) throws -> VaultFile {
+        var copy = self
+        copy.protectors.removeAll { $0.kind == .recovery }
+        copy.protectors.append(try Self.secretProtector(for: vaultKey, secret: secret, kind: .recovery))
+        return copy
+    }
+
     public static func secretProtector(for vaultKey: SymmetricKey, secret: Data, kind: Protector.Kind) throws -> Protector {
         let salt = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
         let wrappingKey = deriveKey(secret: secret, salt: salt)

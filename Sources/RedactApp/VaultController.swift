@@ -118,6 +118,24 @@ final class VaultController: ObservableObject {
         identityIndex = data.identities
     }
 
+    // MARK: - Recovery Key
+
+    /// Replaces the Recovery Key after Touch ID (or the Mac password). Returns the new key to show once.
+    /// The old key, and backups made with it, no longer open this vault.
+    func replaceRecoveryKey() async throws -> String {
+        guard state == .unlocked, let file, let key else { throw VaultError.locked }
+        let context = LAContext()
+        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "replace your Recovery Key") else {
+            throw VaultError.locked
+        }
+        let secret = RecoveryKey.generate()
+        let updated = try file.replacingRecoveryKey(vaultKey: key, with: secret)
+        try updated.write(to: RedactPaths.vault)
+        self.file = updated
+        touch()
+        return RecoveryKey.format(secret)
+    }
+
     // MARK: - Backup and restore
 
     /// Builds a backup of the unlocked vault. The Recovery Key opens it.

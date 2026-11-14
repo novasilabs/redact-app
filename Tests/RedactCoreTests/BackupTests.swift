@@ -171,3 +171,24 @@ private func vault(_ data: VaultData, key: SymmetricKey, recovery: Data) throws 
     #expect(PathRemap.suggest(for: paths, home: "/Users/newuser", exists: { _ in true }) == nil)      // folders are there
     #expect(PathRemap.missing(in: paths, remap: suggestion, exists: { $0.hasPrefix("/Users/newuser/code/acme") }) == ["/Users/newuser/code/blog", "/opt/shared"])
 }
+
+@Test func replacingTheRecoveryKeyRetiresTheOldOneAndKeepsTouchID() throws {
+    let f = Fixture()
+    let key = SymmetricKey(size: .bits256)
+    let old = RecoveryKey.generate()
+    var vaultFile = try vault(f.data, key: key, recovery: old)
+    vaultFile.protectors.append(VaultFile.Protector(kind: .enclave, keyHandle: Data([1, 2, 3]), wrapped: nil, sealed: nil, salt: nil, createdAt: Date()))
+    let oldBackup = try VaultBackup.make(from: vaultFile, data: f.data, key: key, selection: .all(f.data))
+
+    let new = RecoveryKey.generate()
+    let replaced = try vaultFile.replacingRecoveryKey(vaultKey: key, with: new)
+    #expect(replaced.protectors.filter { $0.kind == .recovery }.count == 1)
+    #expect(replaced.protectors.contains { $0.kind == .enclave })
+    #expect(try replaced.open(key: try replaced.unlock(secret: new, kind: .recovery)) == f.data)
+    #expect(throws: VaultError.wrongRecoveryKey) { try replaced.unlock(secret: old, kind: .recovery) }
+
+    // Backups made before still open with the old key only; new backups open with the new key.
+    #expect(throws: VaultError.wrongRecoveryKey) { try VaultBackup.open(oldBackup, recoveryKey: new) }
+    let newBackup = try VaultBackup.make(from: replaced, data: f.data, key: key, selection: .all(f.data))
+    #expect(try VaultBackup.open(newBackup, recoveryKey: new).data == f.data)
+}

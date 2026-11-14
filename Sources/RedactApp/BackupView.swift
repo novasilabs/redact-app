@@ -19,6 +19,7 @@ struct BackupView: View {
     @State private var saved: URL?
     @State private var error: String?
     @State private var restoreURL: URL?
+    @State private var newRecoveryKey: String?
 
     private var selection: BackupSelection {
         everything ? .all(vault.data)
@@ -38,6 +39,7 @@ struct BackupView: View {
 
                 exportCard
                 restoreCard
+                recoveryCard
                 movingCard
             }
             .padding(Space.xl)
@@ -178,6 +180,43 @@ struct BackupView: View {
             }
             .padding(Space.l)
             .card()
+        }
+    }
+
+    // MARK: Recovery Key
+
+    private var recoveryCard: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            GroupLabel("Recovery Key")
+            HStack(spacing: Space.l) {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    Text("Lost your Recovery Key?").font(TextStyle.bodyStrong).foregroundStyle(Palette.ink)
+                    Text("Make a new one while Touch ID still works. The old key stops working, and so do backups made with it, so export a new backup afterwards.")
+                        .font(TextStyle.small).foregroundStyle(Palette.ink2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button { confirmReplaceRecoveryKey() } label: { Label("Replace Recovery Key…", systemImage: "key") }
+                    .buttonStyle(.secondary)
+            }
+            .padding(Space.l)
+            .card()
+        }
+        .sheet(item: Binding(get: { newRecoveryKey.map(RevealedKey.init) }, set: { newRecoveryKey = $0?.text })) { revealed in
+            RecoveryKeySheet(key: revealed.text)
+        }
+    }
+
+    private func confirmReplaceRecoveryKey() {
+        let alert = NSAlert()
+        alert.messageText = "Replace your Recovery Key?"
+        alert.informativeText = "You get a new key to save. The old key stops opening this vault, and backups made before now can only be opened with the old key."
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            do { newRecoveryKey = try await vault.replaceRecoveryKey() } catch {
+                self.error = "The Recovery Key wasn't changed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -376,7 +415,8 @@ struct RestoreSheet: View {
                 }
             }
         }
-        .frame(maxHeight: 300)
+        // A ScrollView in a sheet shrinks to almost nothing unless it has a minimum height.
+        .frame(minHeight: min(CGFloat(plan?.rows.count ?? 0) * 46, 320), maxHeight: 420)
         .card()
     }
 
@@ -504,4 +544,57 @@ struct RestoreChecklist: View {
         .padding(Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+private struct RevealedKey: Identifiable {
+    let text: String
+    var id: String { text }
+}
+
+/// Shows a new Recovery Key once, with copy and print, until the user says it's saved.
+struct RecoveryKeySheet: View {
+    let key: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var saved = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.m) {
+                RedactMark(size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Your new Recovery Key").font(TextStyle.title).foregroundStyle(Palette.ink)
+                    Text("Shown once. Keep it in your password manager or print it.").font(TextStyle.small).foregroundStyle(Palette.ink2)
+                }
+            }
+            Text(key)
+                .font(TextStyle.monoLarge)
+                .foregroundStyle(Palette.ink)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity)
+                .padding(Space.l)
+                .sunken(radius: Radius.card)
+            HStack(spacing: Space.s) {
+                Button { Clipboard.copy(key) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                Button { printRecoveryKey(key) } label: { Label("Print…", systemImage: "printer") }
+            }
+            .buttonStyle(.secondary)
+            Notice(symbol: "info.circle.fill", text: "Next: export a new backup. Older backups only open with the old key.", tone: .neutral)
+            HStack {
+                Toggle("I've saved my new Recovery Key", isOn: $saved).toggleStyle(.checkbox)
+                Spacer()
+                Button("Done") { dismiss() }.buttonStyle(.primary).keyboardShortcut(.defaultAction).disabled(!saved)
+            }
+        }
+        .padding(Space.xl)
+        .frame(width: 560)
+        .canvas()
+        .interactiveDismissDisabled()
+    }
+}
+
+func printRecoveryKey(_ key: String) {
+    let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))
+    text.string = "Redact Recovery Key\n\n\(key)\n\nCreated \(Date().formatted(date: .long, time: .shortened)). Keep this somewhere safe."
+    text.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+    NSPrintOperation(view: text).run()
 }

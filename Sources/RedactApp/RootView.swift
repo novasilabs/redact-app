@@ -133,13 +133,6 @@ struct SetupView: View {
         status.pendingBackup = nil
         restoreURL = url
     }
-
-    private func printRecoveryKey(_ key: String) {
-        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 200))
-        text.string = "Redact Recovery Key\n\n\(key)\n\nCreated \(Date().formatted(date: .long, time: .shortened)). Keep this somewhere safe."
-        text.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        NSPrintOperation(view: text).run()
-    }
 }
 
 // MARK: - Locked
