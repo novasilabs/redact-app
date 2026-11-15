@@ -12,7 +12,7 @@
 
 <code>rr npm run dev</code>
 
-[Guide](GUIDE.md) · [Install](#install) · [What it does](#what-it-does) · [Security](#security) · [FAQ](#faq)
+[Download](https://github.com/novasilabs/redact-app/releases/latest) · [Guide](GUIDE.md) · [Install](#install) · [What it does](#what-it-does) · [Security](#security) · [FAQ](#faq)
 
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?style=flat-square&logo=apple&logoColor=white)](#install)
 [![Apple Silicon and Intel](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-555555?style=flat-square)](#install)
@@ -54,7 +54,7 @@ Every image opens full size if you click it. All of them use demo data.
 
 ### The .dmg (recommended)
 
-1. Download `Redact-<version>.dmg`, open it, and drag Redact into Applications.
+1. Download `Redact-<version>.dmg` from the [latest release](https://github.com/novasilabs/redact-app/releases/latest), open it, and drag Redact into Applications.
 2. Open Redact. It isn't notarized by Apple, so macOS stops it the first time:
    - macOS 15 or later: click Done, then System Settings > Privacy & Security > **Open Anyway**.
    - macOS 14: right-click Redact in Applications > **Open**.
