@@ -8,7 +8,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 swift build >/dev/null
-./scripts/build-app.sh >/dev/null 2>&1
+./scripts/build-app.sh debug >/dev/null 2>&1   # dev hooks exist only in debug builds
 
 work=$(mktemp -d -t redact-snap)
 trap 'rm -rf "$work"' EXIT

@@ -18,6 +18,7 @@ func abbreviate(_ path: String) -> String {
 
 struct ProjectsOverview: View {
     @EnvironmentObject var vault: VaultController
+    @ObservedObject private var terminal = TerminalSetup.shared
     let open: (UUID) -> Void
     let add: () -> Void
     let importFolder: (String) -> Void
@@ -33,6 +34,14 @@ struct ProjectsOverview: View {
                 PageHeader(title: "Projects",
                            subtitle: "Each project is a folder. `redact run` gives its commands the variables for one environment, and they never touch the disk.") {
                     Button(action: add) { Label("Add folder", systemImage: "plus") }.buttonStyle(.primary)
+                }
+                .onAppear { terminal.refresh() }
+
+                if !terminal.isComplete && DevSnapshot.directory == nil {
+                    Notice(symbol: "terminal", text: "Finish setting up your terminal so rr works in your project folders.", tone: .accent) {
+                        Button("Set up…") { NotificationCenter.default.post(name: .redactShowTerminalSetup, object: nil) }
+                            .buttonStyle(.secondary)
+                    }
                 }
 
                 if projects.isEmpty {

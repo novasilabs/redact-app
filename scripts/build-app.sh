@@ -10,6 +10,20 @@ swift build -c "$CONFIG" --product RedactApp
 swift build -c "$CONFIG" --product redact
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
 
+# Release builds are universal: Apple Silicon (native) plus an Intel slice built with a target triple.
+if [ "$CONFIG" = "release" ]; then
+  INTEL=x86_64-apple-macosx14.0
+  swift build -c release --triple "$INTEL" --product RedactApp
+  swift build -c release --triple "$INTEL" --product redact
+  INTEL_BIN="$(swift build -c release --triple "$INTEL" --show-bin-path)"
+  UNIVERSAL="build/universal"
+  mkdir -p "$UNIVERSAL"
+  for product in RedactApp redact; do
+    lipo -create "$BIN/$product" "$INTEL_BIN/$product" -output "$UNIVERSAL/$product"
+  done
+  BIN="$UNIVERSAL"
+fi
+
 APP="build/Redact.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
@@ -18,7 +32,7 @@ cp "$BIN/redact" "$APP/Contents/Resources/bin/redact"
 # Icon: regenerate with `swift scripts/make-icon.swift`.
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-VERSION="0.1.0"
+VERSION="${REDACT_VERSION:-0.1.0}"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,8 +73,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature until there is a Developer ID (see spikes/FINDINGS.md §5).
-codesign --force --sign - --identifier dev.redact.cli "$APP/Contents/Resources/bin/redact"
-codesign --force --sign - --identifier dev.redact.app "$APP"
+# Ad-hoc signature (no Apple Developer ID). Release builds get the hardened runtime: no injected
+# libraries (DYLD_INSERT_LIBRARIES) and no debugger attaching to the process that holds the vault key.
+RUNTIME=""
+[ "$CONFIG" = "release" ] && RUNTIME="--options runtime"
+codesign --force --sign - $RUNTIME --identifier dev.redact.cli "$APP/Contents/Resources/bin/redact"
+codesign --force --sign - $RUNTIME --identifier dev.redact.app "$APP"
 echo "Built $APP"
 echo "CLI:   $APP/Contents/Resources/bin/redact"

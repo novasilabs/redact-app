@@ -17,6 +17,7 @@ struct RedactApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .appSettings) {
+                Button("Set Up Terminal…") { NotificationCenter.default.post(name: .redactShowTerminalSetup, object: nil) }
                 Button("Lock Redact") { delegate.vault.lock() }
                     .keyboardShortcut("l", modifiers: [.command, .control])
             }

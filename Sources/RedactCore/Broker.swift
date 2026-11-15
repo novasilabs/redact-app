@@ -4,9 +4,11 @@ import Foundation
 /// Locations of Redact's files. `REDACT_HOME` overrides the folder (used by tests).
 public enum RedactPaths {
     public static var home: URL {
+        #if REDACT_DEV
         if let override = ProcessInfo.processInfo.environment["REDACT_HOME"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
+        #endif
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Redact", isDirectory: true)
     }
@@ -148,6 +150,11 @@ public struct BrokerResponse: Codable, Sendable {
 // MARK: - Transport
 
 public enum BrokerError: LocalizedError {
+    #if REDACT_DEV
+    static let devHint: String? = " Set REDACT_HOME to a shorter folder."
+    #else
+    static let devHint: String? = nil
+    #endif
     case appNotRunning
     case transport(String)
     case socketPathTooLong(path: String, limit: Int)
@@ -157,7 +164,8 @@ public enum BrokerError: LocalizedError {
         case .appNotRunning: "Redact isn't running. Open Redact.app and try again."
         case .transport(let detail): "Could not talk to Redact: \(detail)"
         case let .socketPathTooLong(path, limit):
-            "The agent socket path is \(path.utf8.count) bytes, longer than the \(limit) a Unix socket allows: \(path). Set REDACT_HOME to a shorter folder."
+            "The agent socket path is \(path.utf8.count) bytes, longer than the \(limit) a Unix socket allows: \(path)."
+                + (Self.devHint ?? "")
         }
     }
 }

@@ -142,6 +142,14 @@ Recovery Key, and set up Touch ID. Folders saved under another user name (`/User
 your home folder. A checklist then covers what lives outside the vault. Restoring into an existing vault
 shows what's new or changed and restores only what you check.
 
+## Release
+
+```sh
+REDACT_VERSION=0.1.0 scripts/make-dmg.sh
+```
+
+Builds `build/Redact-<version>.dmg` (and its `.sha256`): a universal app (Apple Silicon + Intel), ad-hoc signed with the hardened runtime, plus a "Read me first" note. Redact isn't notarized (no Apple Developer ID), so users allow it once: on macOS 15+ via System Settings > Privacy & Security > Open Anyway, on macOS 14 with right-click > Open. In the app, **Redact > Set Up Terminal…** installs the `redact` command (`~/.local/bin`) and the shell hook. Dev hooks (`REDACT_HOME`, screenshot mode) exist only in debug builds.
+
 ## Layout
 
 ```

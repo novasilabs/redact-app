@@ -191,6 +191,7 @@ struct MainView: View {
     @State private var restoreURL: URL?
     @State private var destination: Destination? = .section(.projects)
     @State private var showPaste = false
+    @State private var showTerminalSetup = false
     @State private var importRoot: String?
 
     private var projects: [Project] {
@@ -211,6 +212,7 @@ struct MainView: View {
         }
         .toolbar(.hidden, for: .windowToolbar)
         .sheet(isPresented: $showPaste) { pasteSheet }
+        .sheet(isPresented: $showTerminalSetup) { TerminalSetupView() }
         .sheet(item: Binding(get: { restoreURL.map { ImportTarget(path: $0.path) } }, set: { restoreURL = $0.map { URL(fileURLWithPath: $0.path) } })) { target in
             RestoreSheet(url: URL(fileURLWithPath: target.path), mode: .merge)
         }
@@ -239,6 +241,7 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .redactDevImport)) { note in importRoot = note.object as? String }
         .onReceive(NotificationCenter.default.publisher(for: .redactDevPaste)) { _ in showPaste.toggle() }
         .onReceive(NotificationCenter.default.publisher(for: .redactDevRestore)) { note in restoreURL = note.object as? URL }
+        .onReceive(NotificationCenter.default.publisher(for: .redactShowTerminalSetup)) { _ in showTerminalSetup = true }
     }
 
     private func takePendingBackup() {

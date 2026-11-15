@@ -9,17 +9,25 @@ import SwiftUI
 @MainActor
 enum DevSnapshot {
     static var directory: URL? {
+        #if REDACT_DEV
         let env = ProcessInfo.processInfo.environment
         guard env["REDACT_HOME"] != nil, let dir = env["REDACT_SNAPSHOT_DIR"], !dir.isEmpty else { return nil }
         return URL(fileURLWithPath: dir, isDirectory: true)
+        #else
+        return nil   // release builds never draw demo screenshots
+        #endif
     }
 
     /// `REDACT_SNAPSHOT_PATH_ALIAS=/real/prefix=~/code`: shows demo folders under a friendlier path.
     nonisolated static let pathAlias: (from: String, to: String)? = {
+        #if !REDACT_DEV
+        return nil
+        #else
         let env = ProcessInfo.processInfo.environment
         guard env["REDACT_SNAPSHOT_DIR"] != nil, let raw = env["REDACT_SNAPSHOT_PATH_ALIAS"],
               let eq = raw.firstIndex(of: "=") else { return nil }
         return (String(raw[..<eq]), String(raw[raw.index(after: eq)...]))
+        #endif
     }()
 
     static func run(vault: VaultController, approvals: ApprovalCenter) {

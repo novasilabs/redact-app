@@ -63,7 +63,9 @@ func launchApp() -> Bool {
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     var arguments = ["-g", "-a", app]
+    #if REDACT_DEV
     if let home = ProcessInfo.processInfo.environment["REDACT_HOME"] { arguments += ["--env", "REDACT_HOME=\(home)"] }
+    #endif
     open.arguments = arguments
     guard (try? open.run()) != nil else { return false }
     open.waitUntilExit()
