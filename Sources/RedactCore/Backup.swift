@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-// Backup and restore (PRD §6.9, §6.11).
+// Backup and restore.
 //
 // A backup is a `.redact` file in the vault's own format: the chosen records sealed with the vault key,
 // plus the vault's Recovery Key protector(s), copied as they are. So the Recovery Key the user already

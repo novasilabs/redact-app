@@ -19,6 +19,10 @@ public struct WranglerProfiles {
 
     public static func defaultConfigRoot(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                          environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        #if REDACT_DEV
+        // Screenshots and tests: a demo Wrangler folder, never the developer's real logins.
+        if let demo = environment["REDACT_WRANGLER_HOME"], !demo.isEmpty { return URL(fileURLWithPath: demo, isDirectory: true) }
+        #endif
         let legacy = home.appendingPathComponent(".wrangler", isDirectory: true)
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: legacy.path, isDirectory: &isDirectory), isDirectory.boolValue {

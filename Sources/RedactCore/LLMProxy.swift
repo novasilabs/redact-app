@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-/// Local proxy for OpenAI and Anthropic API keys (PRD §6.4).
+/// Local proxy for OpenAI and Anthropic API keys.
 ///
 /// A command gets a placeholder key and a base URL pointing here; the proxy swaps in the real key and
 /// forwards to the provider. The command can call the API but never holds the key.

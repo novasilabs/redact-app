@@ -31,7 +31,7 @@ final class VaultController: ObservableObject {
     private var unlockedAt: Date?
     private(set) var lastActivity = Date()
 
-    // Locking policy (PRD §6.12).
+    // Locking policy.
     var idleLimit: TimeInterval = 10 * 60
     var maximumSessionAge: TimeInterval = 12 * 60 * 60
 

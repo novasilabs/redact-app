@@ -1,7 +1,7 @@
 import RedactCore
 import SwiftUI
 
-/// Cloud accounts and the folders they're bound to (PRD §6.8, CF-1…CF-5, CF-9, CF-10).
+/// Cloud accounts and the folders they're bound to.
 struct IdentitiesView: View {
     @EnvironmentObject var vault: VaultController
     @State private var profiles: [WranglerProfiles.Profile] = []

@@ -26,7 +26,7 @@ public struct ScanOptions: Codable, Sendable, Equatable {
     }
 }
 
-/// Health scan: where have secrets leaked? (PRD §6.6)
+/// Health scan: where have secrets leaked?
 public enum HealthScan {
     public static let findingLimit = 2000
 

@@ -86,7 +86,7 @@ Verified by reading the Wrangler 4.151.3 bundle and testing with throwaway home 
   - Distributing a notarized open-source build also needs the Apple Developer Program ($99/yr).
 - Socket paths are limited to 104 bytes. Use `~/Library/Application Support/Redact/agent.sock` (short enough), not a temp path.
 
-## Decisions carried into the PRD
+## Decisions carried into the design
 
 1. **Agent broker architecture:** the app holds the unlocked session and does all decryption; the CLI is a thin client over a `0600` Unix socket with audit-token peer checks.
 2. **CF-7 replaced:** the fallback for Wrangler without profiles is Mode B (API token), not config-directory isolation.
